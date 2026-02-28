@@ -15,7 +15,6 @@ import (
 // external packages (handlers, etc.).
 type internalMock struct {
 	ListFn    func(ctx context.Context, params ListParams) ([]Note, error)
-	CountFn   func(ctx context.Context) (int, error)
 	GetByIDFn func(ctx context.Context, id int) (Note, error)
 	CreateFn  func(ctx context.Context, note Note) (Note, error)
 	UpdateFn  func(ctx context.Context, note Note) (Note, error)
@@ -23,9 +22,6 @@ type internalMock struct {
 
 func (m *internalMock) List(ctx context.Context, params ListParams) ([]Note, error) {
 	return m.ListFn(ctx, params)
-}
-func (m *internalMock) Count(ctx context.Context) (int, error) {
-	return m.CountFn(ctx)
 }
 func (m *internalMock) GetByID(ctx context.Context, id int) (Note, error) {
 	return m.GetByIDFn(ctx, id)
@@ -48,7 +44,6 @@ func TestListNotes_DefaultLimit(t *testing.T) {
 			}
 			return []Note{{ID: 1}, {ID: 2}}, nil
 		},
-		CountFn: func(_ context.Context) (int, error) { return 2, nil },
 	}
 	svc := NewNotesService(mock, cfg)
 
@@ -76,7 +71,6 @@ func TestListNotes_ExplicitLimit(t *testing.T) {
 			}
 			return make([]Note, 10), nil
 		},
-		CountFn: func(_ context.Context) (int, error) { return 50, nil },
 	}
 	svc := NewNotesService(mock, cfg)
 
@@ -86,9 +80,6 @@ func TestListNotes_ExplicitLimit(t *testing.T) {
 	}
 	if result.Limit != 10 {
 		t.Errorf("Limit = %d, want 10", result.Limit)
-	}
-	if result.Total != 50 {
-		t.Errorf("Total = %d, want 50", result.Total)
 	}
 }
 
@@ -144,8 +135,7 @@ func TestListNotes_HasMoreAndNextCursor(t *testing.T) {
 		{ID: 3, CreatedAt: fixedTime.Add(2 * time.Second)}, // extra record
 	}
 	mock := &internalMock{
-		ListFn:  func(_ context.Context, _ ListParams) ([]Note, error) { return notes, nil },
-		CountFn: func(_ context.Context) (int, error) { return 5, nil },
+		ListFn: func(_ context.Context, _ ListParams) ([]Note, error) { return notes, nil },
 	}
 	svc := NewNotesService(mock, cfg)
 
@@ -176,8 +166,7 @@ func TestListNotes_HasMoreAndNextCursor(t *testing.T) {
 func TestListNotes_EmptyResults(t *testing.T) {
 	cfg := DefaultConfig()
 	mock := &internalMock{
-		ListFn:  func(_ context.Context, _ ListParams) ([]Note, error) { return nil, nil },
-		CountFn: func(_ context.Context) (int, error) { return 0, nil },
+		ListFn: func(_ context.Context, _ ListParams) ([]Note, error) { return nil, nil },
 	}
 	svc := NewNotesService(mock, cfg)
 
@@ -213,23 +202,6 @@ func TestListNotes_StoreListError(t *testing.T) {
 	}
 }
 
-func TestListNotes_StoreCountError(t *testing.T) {
-	mock := &internalMock{
-		ListFn: func(_ context.Context, _ ListParams) ([]Note, error) {
-			return []Note{{ID: 1}}, nil
-		},
-		CountFn: func(_ context.Context) (int, error) {
-			return 0, fmt.Errorf("count failed")
-		},
-	}
-	svc := NewNotesService(mock, DefaultConfig())
-
-	_, err := svc.ListNotes(context.Background(), "", "", 10)
-	if err == nil {
-		t.Fatal("expected error when store.Count fails")
-	}
-}
-
 func TestListNotes_WithValidCursor(t *testing.T) {
 	cfg := DefaultConfig()
 	cursor := EncodeCursor(Cursor{ID: 5, CreatedAt: fixedTime})
@@ -240,7 +212,6 @@ func TestListNotes_WithValidCursor(t *testing.T) {
 			receivedParams = p
 			return []Note{{ID: 6}}, nil
 		},
-		CountFn: func(_ context.Context) (int, error) { return 10, nil },
 	}
 	svc := NewNotesService(mock, cfg)
 

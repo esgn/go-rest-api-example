@@ -162,7 +162,6 @@ type ListParams struct {
 // PaginatedNotes wraps a page of notes with pagination metadata.
 type PaginatedNotes struct {
 	Data       []Note // The notes on this page
-	Total      int    // Total number of notes in the store
 	Limit      int    // The limit that was applied
 	HasMore    bool   // Whether more notes exist after this page
 	NextCursor string // Opaque cursor for the next page (empty when !HasMore)
@@ -175,7 +174,6 @@ type PaginatedNotes struct {
 // these operations.
 type NotesStore interface {
 	List(ctx context.Context, params ListParams) ([]Note, error)
-	Count(ctx context.Context) (int, error)
 	GetByID(ctx context.Context, id int) (Note, error)
 	Create(ctx context.Context, note Note) (Note, error)
 	Update(ctx context.Context, note Note) (Note, error)

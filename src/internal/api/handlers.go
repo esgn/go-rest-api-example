@@ -73,7 +73,6 @@ func (h *NotesHandler) ListNotes(w http.ResponseWriter, r *http.Request, params 
 
 	response := gen.NoteList{
 		Data:    data,
-		Total:   result.Total,
 		Limit:   result.Limit,
 		HasMore: result.HasMore,
 	}

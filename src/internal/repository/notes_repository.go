@@ -96,15 +96,6 @@ func (r *NotesRepository) List(ctx context.Context, params service.ListParams) (
 	return notes, nil
 }
 
-// Count returns the total number of notes in the database.
-func (r *NotesRepository) Count(ctx context.Context) (int, error) {
-	var count int64
-	if err := r.db.WithContext(ctx).Model(&model.Note{}).Count(&count).Error; err != nil {
-		return 0, fmt.Errorf("count notes: %w", err)
-	}
-	return int(count), nil
-}
-
 // GetByID retrieves a single note by its primary key.
 // If the note doesn't exist, it returns service.ErrNoteNotFound.
 //

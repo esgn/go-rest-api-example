@@ -42,9 +42,6 @@ type NoteList struct {
 
 	// NextCursor Opaque cursor to pass as 'after' for the next page (present only when hasMore is true)
 	NextCursor string `json:"nextCursor,omitempty"`
-
-	// Total Total number of notes in the store
-	Total int `json:"total"`
 }
 
 // ListNotesParams defines parameters for ListNotes.

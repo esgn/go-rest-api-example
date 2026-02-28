@@ -402,7 +402,6 @@ func TestListNotes_Handler_Default(t *testing.T) {
 				{ID: 1, Content: "one", Title: "one", WordCount: 1, CreatedAt: fixedTime, UpdatedAt: fixedTime},
 			}, nil
 		},
-		CountFn: func(_ context.Context) (int, error) { return 1, nil },
 	}
 	h := newTestHandler(mock)
 
@@ -419,9 +418,6 @@ func TestListNotes_Handler_Default(t *testing.T) {
 	decodeBody(t, rec.Result(), &list)
 	if len(list.Data) != 1 {
 		t.Errorf("len(Data) = %d, want 1", len(list.Data))
-	}
-	if list.Total != 1 {
-		t.Errorf("Total = %d, want 1", list.Total)
 	}
 	if list.HasMore {
 		t.Error("HasMore should be false")

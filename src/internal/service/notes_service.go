@@ -64,7 +64,7 @@ func NewNotesService(store NotesStore, cfg Config) *NotesService {
 //   2. Decode the opaque cursor string (if any)
 //   3. Normalise pagination params (apply defaults, clamp to limits)
 //   4. Fetch limit+1 records to detect whether a next page exists
-//   5. Return a PaginatedNotes envelope (data, total, hasMore, nextCursor)
+//   5. Return a PaginatedNotes envelope (data, hasMore, nextCursor)
 //
 // CreateNote / UpdateNote follow a mutation pattern:
 //   1. Validate inputs (business rules)
@@ -117,12 +117,6 @@ func (s *NotesService) ListNotes(ctx context.Context, cursorStr, sort string, li
 		return PaginatedNotes{}, fmt.Errorf("list notes: %w", err)
 	}
 
-	// Count total notes (independent of cursor).
-	total, err := s.store.Count(ctx)
-	if err != nil {
-		return PaginatedNotes{}, fmt.Errorf("count notes: %w", err)
-	}
-
 	hasMore := len(notes) > limit
 	if hasMore {
 		notes = notes[:limit] // Trim the extra record
@@ -136,7 +130,6 @@ func (s *NotesService) ListNotes(ctx context.Context, cursorStr, sort string, li
 
 	return PaginatedNotes{
 		Data:       notes,
-		Total:      total,
 		Limit:      limit,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,

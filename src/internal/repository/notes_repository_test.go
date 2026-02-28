@@ -119,29 +119,6 @@ func TestUpdate(t *testing.T) {
 	}
 }
 
-// ── Count ────────────────────────────────────────────────────────────────────
-
-func TestCount(t *testing.T) {
-	repo := openTestDB(t)
-	ctx := context.Background()
-
-	count, err := repo.Count(ctx)
-	if err != nil {
-		t.Fatalf("Count: %v", err)
-	}
-	if count != 0 {
-		t.Errorf("Count = %d, want 0", count)
-	}
-
-	repo.Create(ctx, makeNote(1))
-	repo.Create(ctx, makeNote(2))
-
-	count, _ = repo.Count(ctx)
-	if count != 2 {
-		t.Errorf("Count = %d, want 2", count)
-	}
-}
-
 // ── List – sort orders ───────────────────────────────────────────────────────
 
 func seedNotes(t *testing.T, repo *NotesRepository, n int) []service.Note {

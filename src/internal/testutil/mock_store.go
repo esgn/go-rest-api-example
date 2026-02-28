@@ -11,7 +11,6 @@ import (
 // needs — any nil field panics with a clear message if called unexpectedly.
 type MockNotesStore struct {
 	ListFn    func(ctx context.Context, params service.ListParams) ([]service.Note, error)
-	CountFn   func(ctx context.Context) (int, error)
 	GetByIDFn func(ctx context.Context, id int) (service.Note, error)
 	CreateFn  func(ctx context.Context, note service.Note) (service.Note, error)
 	UpdateFn  func(ctx context.Context, note service.Note) (service.Note, error)
@@ -25,13 +24,6 @@ func (m *MockNotesStore) List(ctx context.Context, params service.ListParams) ([
 		panic("MockNotesStore.List called but ListFn not set")
 	}
 	return m.ListFn(ctx, params)
-}
-
-func (m *MockNotesStore) Count(ctx context.Context) (int, error) {
-	if m.CountFn == nil {
-		panic("MockNotesStore.Count called but CountFn not set")
-	}
-	return m.CountFn(ctx)
 }
 
 func (m *MockNotesStore) GetByID(ctx context.Context, id int) (service.Note, error) {
