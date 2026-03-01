@@ -17,7 +17,8 @@ paths:
         description: Opaque cursor returned by a previous page (pass the nextCursor value)
         schema:
           type: string
-          pattern: "^[A-Za-z0-9_-]+$"
+          minLength: 1
+          maxLength: 512
       - name: limit
         in: query
         required: false
@@ -32,7 +33,6 @@ paths:
         required: false
         description: |
           Sort order for results. Prefix with - for descending.
-          Supported values: id, -id, createdAt, -createdAt.
           Default: id (ascending by ID).
         schema:
           type: string
@@ -76,6 +76,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -91,6 +93,7 @@ paths:
         required: true
         schema:
           type: integer
+          minimum: 1
       responses:
         "200":
           description: note found
@@ -102,6 +105,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -135,6 +140,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "404":
           $ref: "#/components/responses/NotFound"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -166,8 +173,8 @@ components:
       properties:
         content:
           type: string
-          minLength: 1
           pattern: ".*\\S.*"
+          minLength: 1
           maxLength: 10000
 
     NoteList:
@@ -191,6 +198,7 @@ components:
     ErrorResponse:
       type: object
       required: [ error ]
+      additionalProperties: false
       properties:
         error:
           type: string
@@ -251,3 +259,15 @@ components:
               summary: Unhandled internal error
               value:
                 error: internal server error
+
+    UnsupportedMediaType:
+      description: Unsupported media type (e.g. non-JSON body)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            unsupportedMediaType:
+              summary: Non-JSON body
+              value:
+                error: unsupported media type

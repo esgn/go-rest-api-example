@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"notes-api/internal/logx"
 )
 
 // ── envOrDefault ─────────────────────────────────────────────────────────────
@@ -102,5 +104,41 @@ func TestLoadServiceConfigFromEnv_InvalidConfig(t *testing.T) {
 	_, err := loadServiceConfigFromEnv()
 	if err == nil {
 		t.Fatal("expected invalid service config error, got nil")
+	}
+}
+
+func TestConfigureLogLevel_DefaultsToInfo(t *testing.T) {
+	prev := logx.CurrentLevel()
+	defer logx.SetLevel(prev)
+
+	t.Setenv("LOG_LEVEL", "")
+	configureLogLevel()
+
+	if got := logx.CurrentLevel(); got != logx.LevelInfo {
+		t.Fatalf("level = %v, want %v", got, logx.LevelInfo)
+	}
+}
+
+func TestConfigureLogLevel_ValidValue(t *testing.T) {
+	prev := logx.CurrentLevel()
+	defer logx.SetLevel(prev)
+
+	t.Setenv("LOG_LEVEL", "warn")
+	configureLogLevel()
+
+	if got := logx.CurrentLevel(); got != logx.LevelWarn {
+		t.Fatalf("level = %v, want %v", got, logx.LevelWarn)
+	}
+}
+
+func TestConfigureLogLevel_InvalidFallsBackToInfo(t *testing.T) {
+	prev := logx.CurrentLevel()
+	defer logx.SetLevel(prev)
+
+	t.Setenv("LOG_LEVEL", "nope")
+	configureLogLevel()
+
+	if got := logx.CurrentLevel(); got != logx.LevelInfo {
+		t.Fatalf("level = %v, want %v", got, logx.LevelInfo)
 	}
 }

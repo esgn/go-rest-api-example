@@ -1,221 +1,135 @@
-// Package api contains HTTP handlers — the "adapter" between HTTP and the
-// service layer.
+// Package api contains HTTP handlers that translate between generated strict
+// OpenAPI request/response types and the service layer domain API.
 //
-// WHAT THIS LAYER DOES vs. THE SERVICE LAYER:
-//   - Handler: "I know about HTTP" (status codes, JSON parsing, path/query params)
-//   - Service: "I know about business rules" (validation, derived fields, pagination)
+// Responsibilities of this layer:
+//   - Read already-decoded strict request objects
+//   - Call service use-case methods
+//   - Map service errors to HTTP response objects
+//   - Convert service.Note <-> generated API models
 //
-// NOTE: The generated wrapper (gen/server.gen.go) handles all parameter parsing
-// (path params like {id}, query params like ?after= and ?limit=) before calling
-// handler methods. Handlers receive already-parsed, typed values.
-//
-// The handler NEVER validates content, computes titles, or normalises pagination.
-// It ONLY translates between HTTP and service calls. This separation means:
-//   - You can change the API format (e.g., XML instead of JSON) without
-//     touching business logic.
-//   - You can reuse the service from a CLI or gRPC server.
-//   - Each layer is independently testable.
+// Non-responsibilities:
+//   - No persistence concerns (repository/db own that)
+//   - No core business rules (service owns that)
 package api
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
-	"log"
-	"net/http"
-	"reflect"
-	"sort"
-	"strings"
 
 	gen "notes-api/internal/gen"
+	"notes-api/internal/logx"
 	"notes-api/internal/service"
 )
 
-// Compile-time check: ensure NotesHandler implements all methods in the
-// generated ServerInterface (ListNotes, CreateNote, GetNote, UpdateNote).
-var _ gen.ServerInterface = (*NotesHandler)(nil)
+var _ gen.StrictServerInterface = (*NotesHandler)(nil)
 
-// NotesHandler implements gen.ServerInterface, handling all HTTP endpoints.
-// It depends on service.NotesService (via dependency injection) to avoid
-// directly depending on the database or business logic.
-// The handler layer is purely about HTTP translation — parsing requests,
-// calling the service, mapping responses to JSON.
+// NotesHandler translates strict OpenAPI request/response objects to service calls.
 type NotesHandler struct {
-	service      *service.NotesService
-	maxBodyBytes int64 // upper bound on request body size (bytes)
+	service *service.NotesService
 }
 
-var (
-	listNotesQueryParams = allowedQueryParamsFromStruct[gen.ListNotesParams]()
-	noQueryParams        = map[string]struct{}{}
-)
-
-// NewNotesHandler creates a handler wired to the given service.
-// maxBodyBytes caps the request body size before decoding; requests
-// exceeding this limit are rejected with HTTP 413 before any heap
-// allocation for the body content occurs.
-func NewNotesHandler(svc *service.NotesService, maxBodyBytes int64) *NotesHandler {
-	return &NotesHandler{service: svc, maxBodyBytes: maxBodyBytes}
+// NewNotesHandler builds a strict-server-compatible handler implementation.
+func NewNotesHandler(svc *service.NotesService) *NotesHandler {
+	return &NotesHandler{service: svc}
 }
 
-// ── GET /notes ───────────────────────────────────────────────────────────────
-
-// ListNotes returns a paginated list of notes.
-// The generated wrapper parses ?after=, ?limit=, and ?sort= into params for us.
-// Handler responsibility: call the service with the pagination/sort params and
-// map the PaginatedNotes result → gen.NoteList (the API envelope).
-func (h *NotesHandler) ListNotes(w http.ResponseWriter, r *http.Request, params gen.ListNotesParams) {
-	if rejectUnknownQueryParams(w, r, listNotesQueryParams) {
-		return
-	}
-	// after is optional, but if explicitly provided as empty, reject it.
-	if _, provided := r.URL.Query()["after"]; provided && params.After == "" {
-		writeServiceError(w, service.ErrInvalidCursor)
-		return
-	}
-	// limit is optional, but if explicitly provided as 0, reject it to match
-	// the OpenAPI minimum constraint (minimum: 1).
-	if _, provided := r.URL.Query()["limit"]; provided && params.Limit == 0 {
-		writeServiceError(w, service.ErrInvalidLimit)
-		return
+// ListNotes handles GET /notes.
+//
+// Transport/schema checks are handled by middleware and strict binders.
+// This method focuses on translating typed request inputs to service calls.
+func (h *NotesHandler) ListNotes(ctx context.Context, request gen.ListNotesRequestObject) (gen.ListNotesResponseObject, error) {
+	// Convert optional strict params into service input primitives.
+	after := ""
+	if request.Params.After != nil {
+		after = *request.Params.After
 	}
 
-	result, err := h.service.ListNotes(r.Context(), params.After, string(params.Sort), params.Limit)
+	limit := 0
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+
+	sort := ""
+	if request.Params.Sort != nil {
+		sort = string(*request.Params.Sort)
+	}
+
+	// Service performs cursor decoding, sort validation, limit clamping, and fetch.
+	result, err := h.service.ListNotes(ctx, after, sort, limit)
 	if err != nil {
-		writeServiceError(w, err)
-		return
+		return listNotesErrorResponse(err, after, sort, limit), nil
 	}
 
-	// Map domain notes → API notes, then build the NoteList envelope.
-	// NextCursor is only included when HasMore is true, so clients know
-	// there's a next page and what cursor to pass as ?after=.
+	// Convert domain notes to generated API notes.
 	data := make([]gen.Note, 0, len(result.Data))
 	for _, note := range result.Data {
 		data = append(data, toAPINote(note))
 	}
 
+	// Build API envelope and include next_cursor only when present.
 	response := gen.NoteList{
 		Data:    data,
 		Limit:   result.Limit,
 		HasMore: result.HasMore,
 	}
-	if result.HasMore {
-		response.NextCursor = result.NextCursor
+
+	if result.HasMore && result.NextCursor != "" {
+		cursor := result.NextCursor
+		response.NextCursor = &cursor
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	return gen.ListNotes200JSONResponse(response), nil
 }
 
-// ── POST /notes ──────────────────────────────────────────────────────────────
-
-// CreateNote parses the JSON body and delegates to the service.
-// The handler parses HTTP; the service validates and computes derived fields.
-func (h *NotesHandler) CreateNote(w http.ResponseWriter, r *http.Request) {
-	if rejectUnknownQueryParams(w, r, noQueryParams) {
-		return
+// CreateNote handles POST /notes.
+//
+// Body decoding/typing is performed by strict wrappers before this method.
+// We still guard against nil body for robustness and consistent 400 payload.
+func (h *NotesHandler) CreateNote(ctx context.Context, request gen.CreateNoteRequestObject) (gen.CreateNoteResponseObject, error) {
+	if request.Body == nil {
+		return gen.CreateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: "invalid JSON body"},
+		}, nil
 	}
 
-	// Cap body size before any read so an oversized payload is rejected
-	// immediately rather than being buffered into heap memory.
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
-	defer r.Body.Close()
-
-	// Parse the JSON request body into gen.CreateNoteJSONRequestBody.
-	// This type is auto-generated from the OpenAPI spec and is a type alias
-	// for gen.NewNote, which has a single field: Content string `json:"content"`.
-	var body gen.CreateNoteJSONRequestBody
-
-	decoder := json.NewDecoder(r.Body)
-
-	// DisallowUnknownFields() makes the decoder reject JSON with extra fields.
-	// For example, {"content": "hello", "extra": 123} would be rejected.
-	// This is a defensive practice — it prevents clients from sending
-	// unexpected data that would be silently ignored.
-	decoder.DisallowUnknownFields()
-
-	// Decode reads the JSON from the stream and fills the body struct.
-	// If the JSON is malformed or contains unknown fields, it returns an error
-	// and we respond with HTTP 400 Bad Request.
-	// If the body exceeds maxBodyBytes, MaxBytesReader causes Decode to
-	// return *http.MaxBytesError — we respond with HTTP 413.
-	if err := decoder.Decode(&body); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-		} else {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-		}
-		return
-	}
-
-	// Delegate to service — it will validate, trim, derive title, count words…
-	note, err := h.service.CreateNote(r.Context(), body.Content)
+	note, err := h.service.CreateNote(ctx, request.Body.Content)
 	if err != nil {
-		writeServiceError(w, err)
-		return
+		return createNoteErrorResponse(err), nil
 	}
 
-	writeJSON(w, http.StatusCreated, toAPINote(note))
+	return gen.CreateNote201JSONResponse(toAPINote(note)), nil
 }
 
-// ── GET /notes/{id} ──────────────────────────────────────────────────────────
-
-// GetNote retrieves a single note by its ID.
-// The generated wrapper extracts and parses the {id} path parameter for us.
-func (h *NotesHandler) GetNote(w http.ResponseWriter, r *http.Request, id int) {
-	if rejectUnknownQueryParams(w, r, noQueryParams) {
-		return
-	}
-
-	note, err := h.service.GetNote(r.Context(), id)
+// GetNote handles GET /notes/{id}.
+func (h *NotesHandler) GetNote(ctx context.Context, request gen.GetNoteRequestObject) (gen.GetNoteResponseObject, error) {
+	note, err := h.service.GetNote(ctx, request.Id)
 	if err != nil {
-		writeServiceError(w, err)
-		return
+		return getNoteErrorResponse(request.Id, err), nil
 	}
 
-	writeJSON(w, http.StatusOK, toAPINote(note))
+	return gen.GetNote200JSONResponse(toAPINote(note)), nil
 }
 
-// ── PUT /notes/{id} ──────────────────────────────────────────────────────────
-
-// UpdateNote parses the JSON body and delegates to the service.
-// The generated wrapper extracts and parses the {id} path parameter for us.
-func (h *NotesHandler) UpdateNote(w http.ResponseWriter, r *http.Request, id int) {
-	if rejectUnknownQueryParams(w, r, noQueryParams) {
-		return
+// UpdateNote handles PUT /notes/{id}.
+//
+// Similar to CreateNote, strict decoding has already happened. The handler
+// only translates to service inputs and maps service errors back to transport.
+func (h *NotesHandler) UpdateNote(ctx context.Context, request gen.UpdateNoteRequestObject) (gen.UpdateNoteResponseObject, error) {
+	if request.Body == nil {
+		return gen.UpdateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: "invalid JSON body"},
+		}, nil
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
-	defer r.Body.Close()
-
-	var body gen.UpdateNoteJSONRequestBody
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-		} else {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-		}
-		return
-	}
-
-	note, err := h.service.UpdateNote(r.Context(), id, body.Content)
+	note, err := h.service.UpdateNote(ctx, request.Id, request.Body.Content)
 	if err != nil {
-		writeServiceError(w, err)
-		return
+		return updateNoteErrorResponse(request.Id, err), nil
 	}
 
-	writeJSON(w, http.StatusOK, toAPINote(note))
+	return gen.UpdateNote200JSONResponse(toAPINote(note)), nil
 }
 
-// ── Helper functions ─────────────────────────────────────────────────────────
-
-// toAPINote maps a single service.Note (domain) → gen.Note (API JSON).
-// Used for single-note responses (GetNote, CreateNote, UpdateNote).
-// Paginated list responses use gen.NoteList, which wraps a []gen.Note
-// built by calling this function per element in ListNotes.
+// toAPINote maps the service/domain model to the generated OpenAPI response model.
 func toAPINote(n service.Note) gen.Note {
 	return gen.Note{
 		Id:        n.ID,
@@ -227,88 +141,108 @@ func toAPINote(n service.Note) gen.Note {
 	}
 }
 
-// writeServiceError maps service-layer sentinel errors to HTTP status codes.
-// This is a great example of the handler's job: it doesn't know WHY the error
-// happened (that's the service's domain), it just knows which HTTP status code
-// to use for each error type.
-func writeServiceError(w http.ResponseWriter, err error) {
+// badRequestList is a tiny helper to keep list 400 responses consistent.
+func badRequestList(message string) gen.ListNotesResponseObject {
+	return gen.ListNotes400JSONResponse{
+		BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: message},
+	}
+}
+
+// listNotesErrorResponse maps service-layer errors to ListNotes HTTP responses.
+func listNotesErrorResponse(err error, after, sort string, limit int) gen.ListNotesResponseObject {
+	switch {
+	case errors.Is(err, service.ErrInvalidCursor):
+		return badRequestList(service.ErrInvalidCursor.Error())
+	case errors.Is(err, service.ErrInvalidSort):
+		return badRequestList(service.ErrInvalidSort.Error())
+	case errors.Is(err, service.ErrInvalidLimit):
+		return badRequestList(service.ErrInvalidLimit.Error())
+	default:
+		logx.Errorf(
+			"msg=%q operation=%s after_present=%t sort=%q limit=%d err=%q",
+			"unhandled_service_error",
+			"ListNotes",
+			after != "",
+			sort,
+			limit,
+			err.Error(),
+		)
+		return gen.ListNotes500JSONResponse{
+			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
+		}
+	}
+}
+
+// createNoteErrorResponse maps service-layer errors to CreateNote HTTP responses.
+func createNoteErrorResponse(err error) gen.CreateNoteResponseObject {
 	switch {
 	case errors.Is(err, service.ErrInvalidContent):
-		writeError(w, http.StatusBadRequest, service.ErrInvalidContent.Error())
+		return gen.CreateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: service.ErrInvalidContent.Error()},
+		}
 	case errors.Is(err, service.ErrContentTooLong):
-		writeError(w, http.StatusBadRequest, service.ErrContentTooLong.Error())
-	case errors.Is(err, service.ErrInvalidCursor):
-		writeError(w, http.StatusBadRequest, service.ErrInvalidCursor.Error())
-	case errors.Is(err, service.ErrInvalidSort):
-		writeError(w, http.StatusBadRequest, service.ErrInvalidSort.Error())
-	case errors.Is(err, service.ErrInvalidLimit):
-		writeError(w, http.StatusBadRequest, service.ErrInvalidLimit.Error())
-	case errors.Is(err, service.ErrNoteNotFound):
-		writeError(w, http.StatusNotFound, service.ErrNoteNotFound.Error())
+		return gen.CreateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: service.ErrContentTooLong.Error()},
+		}
 	default:
-		log.Printf("ERROR: unhandled service error: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
-	}
-}
-
-// writeJSON sends a JSON response with the given status code and payload.
-// This centralizes HTTP response handling, keeping it separate from business logic.
-func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
-	// Encode into a buffer first so that a serialization error does not corrupt
-	// a partially-written response (headers have not been sent yet at this point).
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_, _ = w.Write(buf.Bytes())
-}
-
-// writeError is a convenience wrapper that sends a JSON error response.
-// It wraps the message in {"error": message} for consistent error formatting.
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-// rejectUnknownQueryParams validates query keys against an allow-list and
-// writes a 400 response when an unsupported key is present.
-func rejectUnknownQueryParams(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}) bool {
-	query := r.URL.Query()
-	unknown := make([]string, 0, len(query))
-	for key := range query {
-		if _, ok := allowed[key]; !ok {
-			unknown = append(unknown, key)
+		logx.Errorf(
+			"msg=%q operation=%s err=%q",
+			"unhandled_service_error",
+			"CreateNote",
+			err.Error(),
+		)
+		return gen.CreateNote500JSONResponse{
+			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
 		}
 	}
-	if len(unknown) == 0 {
-		return false
-	}
-
-	sort.Strings(unknown)
-	writeError(w, http.StatusBadRequest, "unknown query parameter: "+unknown[0])
-	return true
 }
 
-// allowedQueryParamsFromStruct derives allowed query keys from generated form tags.
-// It keeps query validation aligned with regenerated oapi parameter structs.
-func allowedQueryParamsFromStruct[T any]() map[string]struct{} {
-	t := reflect.TypeOf((*T)(nil)).Elem()
-	allowed := make(map[string]struct{}, t.NumField())
-
-	for i := 0; i < t.NumField(); i++ {
-		formTag := t.Field(i).Tag.Get("form")
-		if formTag == "" || formTag == "-" {
-			continue
+// getNoteErrorResponse maps service-layer errors to GetNote HTTP responses.
+func getNoteErrorResponse(id int, err error) gen.GetNoteResponseObject {
+	switch {
+	case errors.Is(err, service.ErrNoteNotFound):
+		return gen.GetNote404JSONResponse{
+			NotFoundJSONResponse: gen.NotFoundJSONResponse{Error: service.ErrNoteNotFound.Error()},
 		}
-		key := strings.Split(formTag, ",")[0]
-		if key == "" {
-			continue
+	default:
+		logx.Errorf(
+			"msg=%q operation=%s note_id=%d err=%q",
+			"unhandled_service_error",
+			"GetNote",
+			id,
+			err.Error(),
+		)
+		return gen.GetNote500JSONResponse{
+			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
 		}
-		allowed[key] = struct{}{}
 	}
+}
 
-	return allowed
+// updateNoteErrorResponse maps service-layer errors to UpdateNote HTTP responses.
+func updateNoteErrorResponse(id int, err error) gen.UpdateNoteResponseObject {
+	switch {
+	case errors.Is(err, service.ErrInvalidContent):
+		return gen.UpdateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: service.ErrInvalidContent.Error()},
+		}
+	case errors.Is(err, service.ErrContentTooLong):
+		return gen.UpdateNote400JSONResponse{
+			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: service.ErrContentTooLong.Error()},
+		}
+	case errors.Is(err, service.ErrNoteNotFound):
+		return gen.UpdateNote404JSONResponse{
+			NotFoundJSONResponse: gen.NotFoundJSONResponse{Error: service.ErrNoteNotFound.Error()},
+		}
+	default:
+		logx.Errorf(
+			"msg=%q operation=%s note_id=%d err=%q",
+			"unhandled_service_error",
+			"UpdateNote",
+			id,
+			err.Error(),
+		)
+		return gen.UpdateNote500JSONResponse{
+			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
+		}
+	}
 }

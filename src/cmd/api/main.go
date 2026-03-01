@@ -1,17 +1,13 @@
-// Package main is the entry point of the Notes API application.
+// main is the composition root of the application.
 //
-// This file is responsible for "wiring" all the layers of the application together:
-//   - Database connection (SQLite via GORM)
-//   - Repository (data access)
-//   - Service (business logic)
-//   - HTTP handlers (receiving and responding to HTTP requests)
-//   - HTTP server (listening for incoming requests)
-//
-// Think of it as the "assembly line" — it creates each piece and plugs them together.
+// "Composition root" means this is where we wire concrete implementations:
+// HTTP server + strict OpenAPI adapter + middleware + service + repository + DB.
+// No business logic should live here; main only assembles and starts the app.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -21,137 +17,135 @@ import (
 	"syscall"
 	"time"
 
-	"encoding/json"
+	"github.com/joho/godotenv"
 
-	"github.com/joho/godotenv" // Loads .env file into os.Getenv
-
-	// We import each layer of our application.
-	// The "alias handlers" lets us call it "handlers" instead of "api", so it
-	// doesn't conflict with the "gen" package (which is also named "api").
-	handlers "notes-api/internal/api" // HTTP handler layer (translates HTTP into service calls)
-	"notes-api/internal/db"           // Database initialization (opens SQLite, runs migrations)
-	gen "notes-api/internal/gen"      // Auto-generated code from the OpenAPI spec (routes + models)
-	"notes-api/internal/repository"   // Repository layer (reads/writes data using GORM)
-	"notes-api/internal/service"      // Service layer (business rules + validation)
+	handlers "notes-api/internal/api"
+	"notes-api/internal/api/middleware"
+	"notes-api/internal/db"
+	gen "notes-api/internal/gen"
+	"notes-api/internal/logx"
+	"notes-api/internal/repository"
+	"notes-api/internal/service"
 )
 
 func main() {
-	// ── Load .env file (optional) ─────────────────────────────────────────
-	// godotenv.Load() reads a .env file and sets the values as environment
-	// variables. If the file doesn't exist, we silently continue — in
-	// production the env vars are set by the deployment environment.
+	// Load .env when present (local dev convenience).
+	// Missing .env is fine: environment variables still come from the process.
 	_ = godotenv.Load()
+	configureLogLevel()
 
-	// ── Configuration ────────────────────────────────────────────────────
-	// Read configuration from environment variables, or fall back to defaults.
-	// Values can also be provided via a .env file (loaded above).
-	httpAddr := envOrDefault("HTTP_ADDR", ":8080")          // Address the server listens on (e.g. ":8080")
-	sqlitePath := envOrDefault("SQLITE_PATH", "./notes.db") // Path to the SQLite database file
+	// Transport/infrastructure configuration.
+	httpAddr := envOrDefault("HTTP_ADDR", ":8080")
+	sqlitePath := envOrDefault("SQLITE_PATH", "./notes.db")
 
-	// Build per-package configs from env vars, starting from each package's
-	// DefaultConfig() and overriding with env values where provided.
+	// Database pool settings (operational knobs, not business rules).
 	dbCfg := db.DefaultConfig()
 	dbCfg.MaxOpenConns = envOrDefaultInt("DB_MAX_OPEN_CONNS", dbCfg.MaxOpenConns)
 	dbCfg.MaxIdleConns = envOrDefaultInt("DB_MAX_IDLE_CONNS", dbCfg.MaxIdleConns)
 
+	// Service config controls business limits (content length, page limits, etc.).
 	svcCfg, err := loadServiceConfigFromEnv()
 	if err != nil {
 		log.Fatalf("invalid service config: %v", err)
 	}
 
-	// ── Graceful shutdown setup ──────────────────────────────────────────
-	// signal.NotifyContext creates a context that is automatically cancelled
-	// when the process receives an interrupt signal (Ctrl+C) or a SIGTERM
-	// (sent by Docker, Kubernetes, etc. when stopping a container).
-	// This lets us shut down the server cleanly instead of just crashing.
+	// Context cancelled on SIGINT/SIGTERM for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop() // Release signal resources when main() exits
+	defer stop()
 
-	// ── Database ─────────────────────────────────────────────────────────
-	// Open a connection to our SQLite database using GORM (an ORM library).
-	// "database" is a *gorm.DB — the main object we use to interact with the DB.
+	// Open database and fail fast if unreachable/misconfigured.
 	database, err := db.OpenSQLite(ctx, sqlitePath, dbCfg)
 	if err != nil {
-		log.Fatalf("database startup failed: %v", err) // log.Fatalf prints and exits the program
+		log.Fatalf("database startup failed: %v", err)
 	}
 
-	// Get the underlying *sql.DB (Go's standard database handle) so we can
-	// close it when the program exits. This releases the database file lock.
+	// Ensure SQL connection is closed on process exit.
 	sqlDB, err := database.DB()
 	if err != nil {
 		log.Fatalf("database init failed: %v", err)
 	}
-	defer sqlDB.Close() // "defer" means this runs when main() returns
+	defer sqlDB.Close()
 
-	// Run database migrations: this creates or updates the "notes" table
-	// to match our model.Note struct. Safe to run every startup.
+	// Run schema migration at startup.
 	if err := db.Migrate(ctx, database); err != nil {
 		log.Fatalf("database migration failed: %v", err)
 	}
 
-	// ── Dependency injection (wiring layers together) ────────────────────
-	// This is where we create each layer and pass its dependency into the next.
-	// The flow is:  database → repository → service → handlers
-	//
-	// Each layer only knows about the one directly below it (via an interface),
-	// so they stay loosely coupled and easy to test independently.
-	noteRepo := repository.NewNotesRepository(database)      // Repo needs the DB connection
-	noteService := service.NewNotesService(noteRepo, svcCfg) // Service needs a store + config
+	// Build the layered dependencies:
+	// repository -> service -> strict HTTP handlers.
+	noteRepo := repository.NewNotesRepository(database)
+	noteService := service.NewNotesService(noteRepo, svcCfg)
+	noteHandlers := handlers.NewNotesHandler(noteService)
 
-	// Derive a body-size cap from the service config: worst-case UTF-8 is 4
-	// bytes per rune, plus generous overhead for JSON framing (512 bytes).
-	// This rejects over-sized bodies before any heap allocation for content.
+	// Keep request-size cap aligned with old JSON decoder behavior:
+	// max bytes ~= max UTF-8 payload size for content + tiny JSON overhead.
 	maxBodyBytes := int64(svcCfg.MaxContentLength)*4 + 512
-	noteHandlers := handlers.NewNotesHandler(noteService, maxBodyBytes) // Handlers need the service
+	maxAfterCursorLength := 512
 
-	// ── HTTP server ──────────────────────────────────────────────────────
-	// gen.HandlerWithOptions() creates an http.Handler with routes matching the
-	// OpenAPI spec and a custom error handler that returns JSON (consistent with
-	// all other error responses). The default handler would return plain text.
-	// This ensures parse errors (e.g. ?limit=xxx) return {"error": "..."} too.
+	// Strict handler validates/coerces request/response objects generated from OpenAPI.
+	strictServer := gen.NewStrictHandlerWithOptions(noteHandlers, nil, gen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			logx.Warnf("msg=%q method=%s path=%s err=%q", "strict_request_error", r.Method, r.URL.Path, err.Error())
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		},
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
+			logx.Errorf("msg=%q method=%s path=%s err=%q", "strict_response_error", r.Method, r.URL.Path, err.Error())
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		},
+	})
+
+	// Build the net/http server with generated router + focused validation middleware.
+	// NOTE: generated handler middleware order is reverse-wrapped, so registration
+	// order here is intentionally reverse of runtime execution order.
 	server := &http.Server{
-		Addr: httpAddr, // e.g. ":8080"
-		Handler: gen.HandlerWithOptions(noteHandlers, gen.StdHTTPServerOptions{
+		Addr: httpAddr,
+		Handler: gen.HandlerWithOptions(strictServer, gen.StdHTTPServerOptions{
+			Middlewares: []gen.MiddlewareFunc{
+				middleware.RejectUnknownJSONFields(),
+				middleware.EnforceQueryRules(maxAfterCursorLength, svcCfg.MaxPageLimit),
+				middleware.RejectUnknownQueryParams(),
+				middleware.EnforceBodyAndContentType(maxBodyBytes),
+				middleware.RequestLogger(),
+			},
 			ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadRequest)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				logx.Warnf("msg=%q method=%s path=%s err=%q", "router_bind_error", r.Method, r.URL.Path, err.Error())
+				writeJSONError(w, http.StatusBadRequest, err.Error())
 			},
 		}),
-		// Timeouts prevent slow or malicious clients from holding connections
-		// open indefinitely (Slowloris-style attacks, resource exhaustion).
-		ReadHeaderTimeout: 5 * time.Second,  // time to receive the full request header
-		ReadTimeout:       10 * time.Second, // time to read the entire request (header + body)
-		WriteTimeout:      10 * time.Second, // time to write the full response
-		IdleTimeout:       60 * time.Second, // time an idle keep-alive connection stays open
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// ── Graceful shutdown goroutine ──────────────────────────────────────
-	// A goroutine is a lightweight thread. Here we launch one that waits for
-	// the shutdown signal (ctx.Done()), then tells the server to finish
-	// ongoing requests within 10 seconds before forcefully closing.
+	// Shutdown hook: when context is cancelled, stop accepting new requests and
+	// allow in-flight requests up to 10s to finish.
 	go func() {
-		<-ctx.Done() // Block until we receive SIGINT or SIGTERM
+		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("http shutdown error: %v", err)
+			logx.Errorf("msg=%q err=%q", "http_shutdown_error", err.Error())
 		}
 	}()
 
-	// ── Start listening ──────────────────────────────────────────────────
-	// ListenAndServe blocks (waits) until the server is shut down.
-	// When the graceful shutdown above calls server.Shutdown(), ListenAndServe
-	// returns http.ErrServerClosed — which is expected, not a real error.
-	log.Printf("notes-api listening on %s (sqlite=%s)", httpAddr, sqlitePath)
+	logx.Infof("msg=%q http_addr=%q sqlite_path=%q", "notes_api_listening", httpAddr, sqlitePath)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("http server failed: %v", err)
 	}
 }
 
-// envOrDefault reads an environment variable by name.
-// If the variable is not set (empty string), it returns the fallback value.
-// Example: envOrDefault("HTTP_ADDR", ":8080") → returns ":8080" if HTTP_ADDR is not set.
+func configureLogLevel() {
+	raw := envOrDefault("LOG_LEVEL", "info")
+	if err := logx.SetLevelFromString(raw); err != nil {
+		logx.SetLevel(logx.LevelInfo)
+		logx.Warnf("msg=%q value=%q fallback=%q", "invalid_log_level", raw, "info")
+		return
+	}
+	logx.Infof("msg=%q log_level=%q", "log_level_configured", logx.CurrentLevel().String())
+}
+
+// envOrDefault returns the environment value when set, otherwise fallback.
 func envOrDefault(name, fallback string) string {
 	value := os.Getenv(name)
 	if value == "" {
@@ -160,7 +154,8 @@ func envOrDefault(name, fallback string) string {
 	return value
 }
 
-// loadServiceConfigFromEnv builds service config from env vars and validates it.
+// loadServiceConfigFromEnv loads business-rule config from env with defaults.
+// It validates the final values so the process fails fast on bad configuration.
 func loadServiceConfigFromEnv() (service.Config, error) {
 	cfg := service.DefaultConfig()
 	cfg.MaxContentLength = envOrDefaultInt("NOTE_MAX_CONTENT_LENGTH", cfg.MaxContentLength)
@@ -174,9 +169,8 @@ func loadServiceConfigFromEnv() (service.Config, error) {
 	return cfg, nil
 }
 
-// envOrDefaultInt reads an environment variable and parses it as an integer.
-// If the variable is not set or cannot be parsed, it returns the fallback value.
-// Example: envOrDefaultInt("DB_MAX_OPEN_CONNS", 10) → returns 10 if not set.
+// envOrDefaultInt parses an integer env var with fallback on empty/invalid input.
+// Invalid values log a warning and do not stop startup.
 func envOrDefaultInt(name string, fallback int) int {
 	value := os.Getenv(name)
 	if value == "" {
@@ -184,8 +178,15 @@ func envOrDefaultInt(name string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		log.Printf("WARNING: invalid integer for %s=%q, using default %d", name, value, fallback)
+		logx.Warnf("msg=%q env=%s value=%q fallback=%d", "invalid_integer_env", name, value, fallback)
 		return fallback
 	}
 	return parsed
+}
+
+// writeJSONError keeps error responses consistent across startup/router hooks.
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

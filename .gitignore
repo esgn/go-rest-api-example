@@ -9,3 +9,6 @@ venv/
 
 # schemathesis hypothesis
 .hypothesis/
+
+# Old version
+src-v0/

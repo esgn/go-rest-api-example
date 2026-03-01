@@ -46,7 +46,7 @@ type NoteList struct {
 	Limit int `json:"limit"`
 
 	// NextCursor Opaque cursor to pass as 'after' for the next page (present only when hasMore is true)
-	NextCursor string `json:"nextCursor,omitempty"`
+	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
 // BadRequest defines model for BadRequest.
@@ -61,18 +61,20 @@ type NotFound = ErrorResponse
 // PayloadTooLarge defines model for PayloadTooLarge.
 type PayloadTooLarge = ErrorResponse
 
+// UnsupportedMediaType defines model for UnsupportedMediaType.
+type UnsupportedMediaType = ErrorResponse
+
 // ListNotesParams defines parameters for ListNotes.
 type ListNotesParams struct {
 	// After Opaque cursor returned by a previous page (pass the nextCursor value)
-	After string `form:"after,omitempty" json:"after,omitempty"`
+	After *string `form:"after,omitempty" json:"after,omitempty"`
 
 	// Limit Maximum number of results per page (default 20, max 100)
-	Limit int `form:"limit,omitempty" json:"limit,omitempty"`
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Sort Sort order for results. Prefix with - for descending.
-	// Supported values: id, -id, createdAt, -createdAt.
 	// Default: id (ascending by ID).
-	Sort ListNotesParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
+	Sort *ListNotesParamsSort `form:"sort,omitempty" json:"sort,omitempty"`
 }
 
 // ListNotesParamsSort defines parameters for ListNotes.

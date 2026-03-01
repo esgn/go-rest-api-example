@@ -10,18 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"notes-api/internal/api/middleware"
 	gen "notes-api/internal/gen"
 	"notes-api/internal/service"
 	"notes-api/internal/testutil"
 )
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
 var fixedTime = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-// newTestHandler builds a NotesHandler backed by a real NotesService whose
-// store is the supplied mock. maxBodyBytes defaults to a generous limit.
-func newTestHandler(mock *testutil.MockNotesStore) *NotesHandler {
+func newTestHTTPHandler(mock *testutil.MockNotesStore, maxBodyBytes int64) http.Handler {
 	cfg := service.Config{
 		MaxContentLength: 100,
 		MaxTitleLength:   20,
@@ -29,14 +26,51 @@ func newTestHandler(mock *testutil.MockNotesStore) *NotesHandler {
 		MaxPageLimit:     100,
 	}
 	svc := service.NewNotesService(mock, cfg)
-	return NewNotesHandler(svc, 1024) // 1 KB body limit for tests
+	strictImpl := NewNotesHandler(svc)
+
+	strictServer := gen.NewStrictHandlerWithOptions(strictImpl, nil, gen.StrictHTTPServerOptions{
+		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		},
+		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			writeJSONError(w, http.StatusInternalServerError, "internal server error")
+		},
+	})
+
+	return gen.HandlerWithOptions(strictServer, gen.StdHTTPServerOptions{
+		Middlewares: []gen.MiddlewareFunc{
+			middleware.RejectUnknownJSONFields(),
+			middleware.EnforceQueryRules(512, cfg.MaxPageLimit),
+			middleware.RejectUnknownQueryParams(),
+			middleware.EnforceBodyAndContentType(maxBodyBytes),
+		},
+		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		},
+	})
 }
 
-// decodeBody reads a JSON response body into the given pointer.
-func decodeBody(t *testing.T, resp *http.Response, v interface{}) {
+func newDefaultTestHTTPHandler(mock *testutil.MockNotesStore) http.Handler {
+	return newTestHTTPHandler(mock, 1024)
+}
+
+func doRequest(t *testing.T, h http.Handler, method, target, contentType, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func decodeBody(t *testing.T, rr *httptest.ResponseRecorder, v interface{}) {
+	t.Helper()
+
+	data, err := io.ReadAll(rr.Result().Body)
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -45,7 +79,11 @@ func decodeBody(t *testing.T, resp *http.Response, v interface{}) {
 	}
 }
 
-// ── toAPINote ────────────────────────────────────────────────────────────────
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
 
 func TestToAPINote(t *testing.T) {
 	n := service.Note{
@@ -78,110 +116,22 @@ func TestToAPINote(t *testing.T) {
 	}
 }
 
-// ── writeJSON ────────────────────────────────────────────────────────────────
-
-func TestWriteJSON(t *testing.T) {
-	rec := httptest.NewRecorder()
-	writeJSON(rec, http.StatusOK, map[string]string{"key": "value"})
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "application/json; charset=utf-8" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json; charset=utf-8")
-	}
-
-	var body map[string]string
-	decodeBody(t, resp, &body)
-	if body["key"] != "value" {
-		t.Errorf("body[\"key\"] = %q, want %q", body["key"], "value")
-	}
-}
-
-// ── writeError ───────────────────────────────────────────────────────────────
-
-func TestWriteError(t *testing.T) {
-	rec := httptest.NewRecorder()
-	writeError(rec, http.StatusBadRequest, "oops")
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
-	}
-
-	var body map[string]string
-	decodeBody(t, resp, &body)
-	if body["error"] != "oops" {
-		t.Errorf("body[\"error\"] = %q, want %q", body["error"], "oops")
-	}
-}
-
-func TestAllowedQueryParamsFromStruct_ListNotes(t *testing.T) {
-	allowed := allowedQueryParamsFromStruct[gen.ListNotesParams]()
-
-	for _, key := range []string{"after", "limit", "sort"} {
-		if _, ok := allowed[key]; !ok {
-			t.Fatalf("missing expected query param key %q", key)
-		}
-	}
-	if len(allowed) != 3 {
-		t.Fatalf("allowed key count = %d, want 3", len(allowed))
-	}
-}
-
-// ── writeServiceError ────────────────────────────────────────────────────────
-
-func TestWriteServiceError(t *testing.T) {
-	tests := []struct {
-		name       string
-		err        error
-		wantStatus int
-	}{
-		{"ErrInvalidContent", service.ErrInvalidContent, http.StatusBadRequest},
-		{"ErrContentTooLong", service.ErrContentTooLong, http.StatusBadRequest},
-		{"ErrInvalidCursor", service.ErrInvalidCursor, http.StatusBadRequest},
-		{"ErrInvalidSort", service.ErrInvalidSort, http.StatusBadRequest},
-		{"ErrInvalidLimit", service.ErrInvalidLimit, http.StatusBadRequest},
-		{"ErrNoteNotFound", service.ErrNoteNotFound, http.StatusNotFound},
-		{"unknown error", io.ErrUnexpectedEOF, http.StatusInternalServerError},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			writeServiceError(rec, tt.err)
-			if rec.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
-			}
-		})
-	}
-}
-
-// ── CreateNote handler ───────────────────────────────────────────────────────
-
-func TestCreateNote_Handler_Valid(t *testing.T) {
+func TestCreateNoteHandler_Valid(t *testing.T) {
 	mock := &testutil.MockNotesStore{
 		CreateFn: func(_ context.Context, n service.Note) (service.Note, error) {
 			n.ID = 1
 			return n, nil
 		},
 	}
-	h := newTestHandler(mock)
+	h := newDefaultTestHTTPHandler(mock)
 
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(`{"content":"hello world"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusCreated)
+	rr := doRequest(t, h, http.MethodPost, "/notes", "application/json", `{"content":"hello world"}`)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusCreated)
 	}
 
 	var note gen.Note
-	decodeBody(t, rec.Result(), &note)
+	decodeBody(t, rr, &note)
 	if note.Id != 1 {
 		t.Errorf("Id = %d, want 1", note.Id)
 	}
@@ -190,329 +140,228 @@ func TestCreateNote_Handler_Valid(t *testing.T) {
 	}
 }
 
-func TestCreateNote_Handler_EmptyBody(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
+func TestCreateNoteHandler_BadInputs(t *testing.T) {
+	h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
 
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(""))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+	tests := []struct {
+		name        string
+		target      string
+		contentType string
+		body        string
+		wantStatus  int
+	}{
+		{name: "empty body", target: "/notes", contentType: "application/json", body: "", wantStatus: http.StatusBadRequest},
+		{name: "malformed json", target: "/notes", contentType: "application/json", body: `{invalid`, wantStatus: http.StatusBadRequest},
+		{name: "unknown fields", target: "/notes", contentType: "application/json", body: `{"content":"hi","extra":123}`, wantStatus: http.StatusBadRequest},
+		{name: "unknown query", target: "/notes?foo=bar", contentType: "application/json", body: `{"content":"hello"}`, wantStatus: http.StatusBadRequest},
+		{name: "unsupported media type", target: "/notes", contentType: "text/plain", body: `{"content":"hello"}`, wantStatus: http.StatusUnsupportedMediaType},
+		{name: "empty content", target: "/notes", contentType: "application/json", body: `{"content":""}`, wantStatus: http.StatusBadRequest},
+	}
 
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := doRequest(t, h, http.MethodPost, tt.target, tt.contentType, tt.body)
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rr.Code, tt.wantStatus)
+			}
+		})
 	}
 }
 
-func TestCreateNote_Handler_MalformedJSON(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(`{invalid`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestCreateNote_Handler_UnknownFields(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(`{"content":"hi","extra":123}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestCreateNote_Handler_OversizedBody(t *testing.T) {
-	mock := &testutil.MockNotesStore{}
-	// Build a handler with a tiny 32-byte body limit
-	svc := service.NewNotesService(mock, service.Config{
-		MaxContentLength: 10000,
-		MaxTitleLength:   50,
-		DefaultPageLimit: 20,
-		MaxPageLimit:     100,
-	})
-	h := NewNotesHandler(svc, 32)
-
+func TestCreateNoteHandler_OversizedBody(t *testing.T) {
+	h := newTestHTTPHandler(&testutil.MockNotesStore{}, 32)
 	body := `{"content":"` + strings.Repeat("a", 1000) + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
 
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	rr := doRequest(t, h, http.MethodPost, "/notes", "application/json", body)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 
-func TestCreateNote_Handler_EmptyContent(t *testing.T) {
-	mock := &testutil.MockNotesStore{}
-	h := newTestHandler(mock)
+func TestGetNoteHandler(t *testing.T) {
+	t.Run("found", func(t *testing.T) {
+		mock := &testutil.MockNotesStore{
+			GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
+				return service.Note{
+					ID:        id,
+					Content:   "hello",
+					Title:     "hello",
+					WordCount: 1,
+					CreatedAt: fixedTime,
+					UpdatedAt: fixedTime,
+				}, nil
+			},
+		}
+		h := newDefaultTestHTTPHandler(mock)
 
-	req := httptest.NewRequest(http.MethodPost, "/notes", strings.NewReader(`{"content":""}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+		rr := doRequest(t, h, http.MethodGet, "/notes/1", "", "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+		}
 
-	h.CreateNote(rec, req)
-
-	// Empty content → service returns ErrInvalidContent → handler returns 400
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestCreateNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodPost, "/notes?foo=bar", strings.NewReader(`{"content":"hello"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.CreateNote(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-// ── GetNote handler ──────────────────────────────────────────────────────────
-
-func TestGetNote_Handler_Found(t *testing.T) {
-	mock := &testutil.MockNotesStore{
-		GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
-			return service.Note{
-				ID:        id,
-				Content:   "hello",
-				Title:     "hello",
-				WordCount: 1,
-				CreatedAt: fixedTime,
-				UpdatedAt: fixedTime,
-			}, nil
-		},
-	}
-	h := newTestHandler(mock)
-
-	req := httptest.NewRequest(http.MethodGet, "/notes/1", nil)
-	rec := httptest.NewRecorder()
-
-	h.GetNote(rec, req, 1)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-
-	var note gen.Note
-	decodeBody(t, rec.Result(), &note)
-	if note.Id != 1 {
-		t.Errorf("Id = %d, want 1", note.Id)
-	}
-}
-
-func TestGetNote_Handler_NotFound(t *testing.T) {
-	mock := &testutil.MockNotesStore{
-		GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
-			return service.Note{}, service.ErrNoteNotFound
-		},
-	}
-	h := newTestHandler(mock)
-
-	req := httptest.NewRequest(http.MethodGet, "/notes/999", nil)
-	rec := httptest.NewRecorder()
-
-	h.GetNote(rec, req, 999)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestGetNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodGet, "/notes/1?foo=bar", nil)
-	rec := httptest.NewRecorder()
-
-	h.GetNote(rec, req, 1)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-// ── UpdateNote handler ───────────────────────────────────────────────────────
-
-func TestUpdateNote_Handler_Valid(t *testing.T) {
-	mock := &testutil.MockNotesStore{
-		GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
-			return service.Note{ID: id, Content: "old", CreatedAt: fixedTime, UpdatedAt: fixedTime}, nil
-		},
-		UpdateFn: func(_ context.Context, n service.Note) (service.Note, error) {
-			return n, nil
-		},
-	}
-	h := newTestHandler(mock)
-
-	req := httptest.NewRequest(http.MethodPut, "/notes/1", strings.NewReader(`{"content":"updated"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.UpdateNote(rec, req, 1)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-
-	var note gen.Note
-	decodeBody(t, rec.Result(), &note)
-	if note.Content != "updated" {
-		t.Errorf("Content = %q, want %q", note.Content, "updated")
-	}
-}
-
-func TestUpdateNote_Handler_NotFound(t *testing.T) {
-	mock := &testutil.MockNotesStore{
-		GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
-			return service.Note{}, service.ErrNoteNotFound
-		},
-	}
-	h := newTestHandler(mock)
-
-	req := httptest.NewRequest(http.MethodPut, "/notes/999", strings.NewReader(`{"content":"updated"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.UpdateNote(rec, req, 999)
-
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-}
-
-func TestUpdateNote_Handler_InvalidBody(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodPut, "/notes/1", strings.NewReader(`not json`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.UpdateNote(rec, req, 1)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestUpdateNote_Handler_OversizedBody(t *testing.T) {
-	svc := service.NewNotesService(&testutil.MockNotesStore{}, service.Config{
-		MaxContentLength: 10000,
-		MaxTitleLength:   50,
-		DefaultPageLimit: 20,
-		MaxPageLimit:     100,
+		var note gen.Note
+		decodeBody(t, rr, &note)
+		if note.Id != 1 {
+			t.Errorf("Id = %d, want 1", note.Id)
+		}
 	})
-	h := NewNotesHandler(svc, 32) // tiny limit
 
-	body := `{"content":"` + strings.Repeat("x", 1000) + `"}`
-	req := httptest.NewRequest(http.MethodPut, "/notes/1", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+	t.Run("not found", func(t *testing.T) {
+		mock := &testutil.MockNotesStore{
+			GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
+				return service.Note{}, service.ErrNoteNotFound
+			},
+		}
+		h := newDefaultTestHTTPHandler(mock)
 
-	h.UpdateNote(rec, req, 1)
+		rr := doRequest(t, h, http.MethodGet, "/notes/999", "", "")
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+		}
+	})
 
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
-	}
+	t.Run("unknown query", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes/1?foo=bar", "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 }
 
-func TestUpdateNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
+func TestUpdateNoteHandler(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		mock := &testutil.MockNotesStore{
+			GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
+				return service.Note{ID: id, Content: "old", CreatedAt: fixedTime, UpdatedAt: fixedTime}, nil
+			},
+			UpdateFn: func(_ context.Context, n service.Note) (service.Note, error) {
+				return n, nil
+			},
+		}
+		h := newDefaultTestHTTPHandler(mock)
 
-	req := httptest.NewRequest(http.MethodPut, "/notes/1?foo=bar", strings.NewReader(`{"content":"updated"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
+		rr := doRequest(t, h, http.MethodPut, "/notes/1", "application/json", `{"content":"updated"}`)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+		}
 
-	h.UpdateNote(rec, req, 1)
+		var note gen.Note
+		decodeBody(t, rr, &note)
+		if note.Content != "updated" {
+			t.Errorf("Content = %q, want %q", note.Content, "updated")
+		}
+	})
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	t.Run("not found", func(t *testing.T) {
+		mock := &testutil.MockNotesStore{
+			GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
+				return service.Note{}, service.ErrNoteNotFound
+			},
+		}
+		h := newDefaultTestHTTPHandler(mock)
+
+		rr := doRequest(t, h, http.MethodPut, "/notes/999", "application/json", `{"content":"updated"}`)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("invalid body", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodPut, "/notes/1", "application/json", `not json`)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("oversized body", func(t *testing.T) {
+		h := newTestHTTPHandler(&testutil.MockNotesStore{}, 32)
+		body := `{"content":"` + strings.Repeat("x", 1000) + `"}`
+		rr := doRequest(t, h, http.MethodPut, "/notes/1", "application/json", body)
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusRequestEntityTooLarge)
+		}
+	})
+
+	t.Run("unknown query", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodPut, "/notes/1?foo=bar", "application/json", `{"content":"updated"}`)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("unsupported media type", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodPut, "/notes/1", "text/plain", `{"content":"updated"}`)
+		if rr.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnsupportedMediaType)
+		}
+	})
 }
 
-// ── ListNotes handler ────────────────────────────────────────────────────────
+func TestListNotesHandler(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		mock := &testutil.MockNotesStore{
+			ListFn: func(_ context.Context, _ service.ListParams) ([]service.Note, error) {
+				return []service.Note{{ID: 1, Content: "one", Title: "one", WordCount: 1, CreatedAt: fixedTime, UpdatedAt: fixedTime}}, nil
+			},
+		}
+		h := newDefaultTestHTTPHandler(mock)
 
-func TestListNotes_Handler_Default(t *testing.T) {
-	mock := &testutil.MockNotesStore{
-		ListFn: func(_ context.Context, _ service.ListParams) ([]service.Note, error) {
-			return []service.Note{
-				{ID: 1, Content: "one", Title: "one", WordCount: 1, CreatedAt: fixedTime, UpdatedAt: fixedTime},
-			}, nil
-		},
-	}
-	h := newTestHandler(mock)
+		rr := doRequest(t, h, http.MethodGet, "/notes", "", "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+		}
 
-	req := httptest.NewRequest(http.MethodGet, "/notes", nil)
-	rec := httptest.NewRecorder()
+		var list gen.NoteList
+		decodeBody(t, rr, &list)
+		if len(list.Data) != 1 {
+			t.Fatalf("len(Data) = %d, want 1", len(list.Data))
+		}
+		if list.HasMore {
+			t.Error("HasMore should be false")
+		}
+	})
 
-	h.ListNotes(rec, req, gen.ListNotesParams{})
+	t.Run("unknown query", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes?foo=bar", "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
+	t.Run("explicit zero limit", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes?limit=0", "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 
-	var list gen.NoteList
-	decodeBody(t, rec.Result(), &list)
-	if len(list.Data) != 1 {
-		t.Errorf("len(Data) = %d, want 1", len(list.Data))
-	}
-	if list.HasMore {
-		t.Error("HasMore should be false")
-	}
-}
+	t.Run("explicit empty after", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes?after=", "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 
-func TestListNotes_Handler_RejectsUnknownQueryParam(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
+	t.Run("too long after", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes?after="+strings.Repeat("a", 513), "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 
-	req := httptest.NewRequest(http.MethodGet, "/notes?foo=bar", nil)
-	rec := httptest.NewRecorder()
-
-	h.ListNotes(rec, req, gen.ListNotesParams{})
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestListNotes_Handler_RejectsExplicitZeroLimit(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodGet, "/notes?limit=0", nil)
-	rec := httptest.NewRecorder()
-
-	h.ListNotes(rec, req, gen.ListNotesParams{Limit: 0})
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
-}
-
-func TestListNotes_Handler_RejectsExplicitEmptyAfter(t *testing.T) {
-	h := newTestHandler(&testutil.MockNotesStore{})
-
-	req := httptest.NewRequest(http.MethodGet, "/notes?after=", nil)
-	rec := httptest.NewRecorder()
-
-	h.ListNotes(rec, req, gen.ListNotesParams{After: ""})
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	t.Run("limit above max", func(t *testing.T) {
+		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		rr := doRequest(t, h, http.MethodGet, "/notes?limit=101", "", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+	})
 }
