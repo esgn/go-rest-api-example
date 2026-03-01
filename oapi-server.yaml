@@ -4,8 +4,8 @@ generate:
   strict-server: false # adds validation layer
 output: src/internal/gen/server.gen.go # will overwrite this file if it already exists
 output-options:
-  skip-prune: false # do not remove unused imports (default: false)
-  nullable-type: false # generate dedicated nullable types for nullable fields (default: false)
-  prefer-skip-optional-pointer: false # skip pointer for optional fields if not required (default: false)
+  skip-prune: true # do not remove unused imports (default: false)
+  nullable-type: true # generate dedicated nullable types for nullable fields (default: false)
+  prefer-skip-optional-pointer: true # skip pointer for optional fields if not required (default: false)
 compatibility:
-  always-prefix-enum-values: false # always prefix enum values with the schema name (default: false)
+  always-prefix-enum-values: true # always prefix enum values with the schema name (default: false)
