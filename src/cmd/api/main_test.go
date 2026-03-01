@@ -78,3 +78,29 @@ func TestEnvOrDefaultInt_Zero(t *testing.T) {
 		t.Errorf("got %d, want 0", got)
 	}
 }
+
+// ── loadServiceConfigFromEnv ────────────────────────────────────────────────
+
+func TestLoadServiceConfigFromEnv_DefaultsAreValid(t *testing.T) {
+	t.Setenv("NOTE_MAX_CONTENT_LENGTH", "")
+	t.Setenv("NOTE_MAX_TITLE_LENGTH", "")
+	t.Setenv("PAGE_DEFAULT_LIMIT", "")
+	t.Setenv("PAGE_MAX_LIMIT", "")
+
+	_, err := loadServiceConfigFromEnv()
+	if err != nil {
+		t.Fatalf("expected default config to be valid, got %v", err)
+	}
+}
+
+func TestLoadServiceConfigFromEnv_InvalidConfig(t *testing.T) {
+	t.Setenv("NOTE_MAX_TITLE_LENGTH", "-1")
+	t.Setenv("NOTE_MAX_CONTENT_LENGTH", "100")
+	t.Setenv("PAGE_DEFAULT_LIMIT", "20")
+	t.Setenv("PAGE_MAX_LIMIT", "100")
+
+	_, err := loadServiceConfigFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid service config error, got nil")
+	}
+}

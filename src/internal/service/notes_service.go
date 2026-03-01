@@ -254,6 +254,12 @@ func (s *NotesService) UpdateNote(ctx context.Context, id int, content string) (
 //	"Buy milk and eggs" → "Buy milk and eggs"
 //	"This is a very long first line that exceeds the maximum title length limit" → "This is a very long first line that exceeds the…"
 func (s *NotesService) deriveTitle(content string) string {
+	// Defensive guard: startup should reject invalid config, but this ensures
+	// runtime calls never panic if misconfigured.
+	if s.cfg.MaxTitleLength <= 0 {
+		return ""
+	}
+
 	// Take the first line only
 	firstLine := content
 	if idx := strings.IndexByte(content, '\n'); idx >= 0 {

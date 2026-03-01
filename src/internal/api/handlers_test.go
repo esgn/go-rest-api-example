@@ -118,6 +118,19 @@ func TestWriteError(t *testing.T) {
 	}
 }
 
+func TestAllowedQueryParamsFromStruct_ListNotes(t *testing.T) {
+	allowed := allowedQueryParamsFromStruct[gen.ListNotesParams]()
+
+	for _, key := range []string{"after", "limit", "sort"} {
+		if _, ok := allowed[key]; !ok {
+			t.Fatalf("missing expected query param key %q", key)
+		}
+	}
+	if len(allowed) != 3 {
+		t.Fatalf("allowed key count = %d, want 3", len(allowed))
+	}
+}
+
 // ── writeServiceError ────────────────────────────────────────────────────────
 
 func TestWriteServiceError(t *testing.T) {
@@ -258,6 +271,20 @@ func TestCreateNote_Handler_EmptyContent(t *testing.T) {
 	}
 }
 
+func TestCreateNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodPost, "/notes?foo=bar", strings.NewReader(`{"content":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.CreateNote(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 // ── GetNote handler ──────────────────────────────────────────────────────────
 
 func TestGetNote_Handler_Found(t *testing.T) {
@@ -306,6 +333,19 @@ func TestGetNote_Handler_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestGetNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodGet, "/notes/1?foo=bar", nil)
+	rec := httptest.NewRecorder()
+
+	h.GetNote(rec, req, 1)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
@@ -393,6 +433,20 @@ func TestUpdateNote_Handler_OversizedBody(t *testing.T) {
 	}
 }
 
+func TestUpdateNote_Handler_RejectsUnknownQueryParam(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodPut, "/notes/1?foo=bar", strings.NewReader(`{"content":"updated"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.UpdateNote(rec, req, 1)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
 // ── ListNotes handler ────────────────────────────────────────────────────────
 
 func TestListNotes_Handler_Default(t *testing.T) {
@@ -421,5 +475,44 @@ func TestListNotes_Handler_Default(t *testing.T) {
 	}
 	if list.HasMore {
 		t.Error("HasMore should be false")
+	}
+}
+
+func TestListNotes_Handler_RejectsUnknownQueryParam(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodGet, "/notes?foo=bar", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListNotes(rec, req, gen.ListNotesParams{})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListNotes_Handler_RejectsExplicitZeroLimit(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodGet, "/notes?limit=0", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListNotes(rec, req, gen.ListNotesParams{Limit: 0})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListNotes_Handler_RejectsExplicitEmptyAfter(t *testing.T) {
+	h := newTestHandler(&testutil.MockNotesStore{})
+
+	req := httptest.NewRequest(http.MethodGet, "/notes?after=", nil)
+	rec := httptest.NewRecorder()
+
+	h.ListNotes(rec, req, gen.ListNotesParams{After: ""})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }

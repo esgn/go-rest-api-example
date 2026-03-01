@@ -54,11 +54,10 @@ func main() {
 	dbCfg.MaxOpenConns = envOrDefaultInt("DB_MAX_OPEN_CONNS", dbCfg.MaxOpenConns)
 	dbCfg.MaxIdleConns = envOrDefaultInt("DB_MAX_IDLE_CONNS", dbCfg.MaxIdleConns)
 
-	svcCfg := service.DefaultConfig()
-	svcCfg.MaxContentLength = envOrDefaultInt("NOTE_MAX_CONTENT_LENGTH", svcCfg.MaxContentLength)
-	svcCfg.MaxTitleLength = envOrDefaultInt("NOTE_MAX_TITLE_LENGTH", svcCfg.MaxTitleLength)
-	svcCfg.DefaultPageLimit = envOrDefaultInt("PAGE_DEFAULT_LIMIT", svcCfg.DefaultPageLimit)
-	svcCfg.MaxPageLimit = envOrDefaultInt("PAGE_MAX_LIMIT", svcCfg.MaxPageLimit)
+	svcCfg, err := loadServiceConfigFromEnv()
+	if err != nil {
+		log.Fatalf("invalid service config: %v", err)
+	}
 
 	// ── Graceful shutdown setup ──────────────────────────────────────────
 	// signal.NotifyContext creates a context that is automatically cancelled
@@ -159,6 +158,20 @@ func envOrDefault(name, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// loadServiceConfigFromEnv builds service config from env vars and validates it.
+func loadServiceConfigFromEnv() (service.Config, error) {
+	cfg := service.DefaultConfig()
+	cfg.MaxContentLength = envOrDefaultInt("NOTE_MAX_CONTENT_LENGTH", cfg.MaxContentLength)
+	cfg.MaxTitleLength = envOrDefaultInt("NOTE_MAX_TITLE_LENGTH", cfg.MaxTitleLength)
+	cfg.DefaultPageLimit = envOrDefaultInt("PAGE_DEFAULT_LIMIT", cfg.DefaultPageLimit)
+	cfg.MaxPageLimit = envOrDefaultInt("PAGE_MAX_LIMIT", cfg.MaxPageLimit)
+
+	if err := service.ValidateConfig(cfg); err != nil {
+		return service.Config{}, err
+	}
+	return cfg, nil
 }
 
 // envOrDefaultInt reads an environment variable and parses it as an integer.

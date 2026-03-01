@@ -127,14 +127,25 @@ func (r *NotesRepository) Create(ctx context.Context, note service.Note) (servic
 }
 
 // Update saves changes to an existing note in the database.
-// GORM's Save() generates an UPDATE statement for the record's primary key.
-// Again, no business logic — just persistence.
+// It performs a strict UPDATE by primary key and returns ErrNoteNotFound when
+// no row matches, avoiding GORM Save()'s upsert behavior.
 func (r *NotesRepository) Update(ctx context.Context, note service.Note) (service.Note, error) {
-	record := toModelNote(note)
-	if err := r.db.WithContext(ctx).Save(&record).Error; err != nil {
-		return service.Note{}, fmt.Errorf("update note %d: %w", note.ID, err)
+	result := r.db.WithContext(ctx).
+		Model(&model.Note{}).
+		Where("id = ?", note.ID).
+		Updates(map[string]interface{}{
+			"content":    note.Content,
+			"title":      note.Title,
+			"word_count": note.WordCount,
+			"updated_at": note.UpdatedAt,
+		})
+	if result.Error != nil {
+		return service.Note{}, fmt.Errorf("update note %d: %w", note.ID, result.Error)
 	}
-	return toServiceNote(record), nil
+	if result.RowsAffected == 0 {
+		return service.Note{}, service.ErrNoteNotFound
+	}
+	return note, nil
 }
 
 // ── Mapping functions ────────────────────────────────────────────────────────

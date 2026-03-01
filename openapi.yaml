@@ -1,0 +1,253 @@
+openapi: 3.0.3
+info:
+  title: Notes API
+  version: 1.0.0
+
+paths:
+  /notes:
+    get:
+      operationId: listNotes
+      description: |
+        Returns a paginated list of notes.
+        Unknown query parameters are rejected with HTTP 400.
+      parameters:
+      - name: after
+        in: query
+        required: false
+        description: Opaque cursor returned by a previous page (pass the nextCursor value)
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9_-]+$"
+      - name: limit
+        in: query
+        required: false
+        description: Maximum number of results per page (default 20, max 100)
+        schema:
+          type: integer
+          default: 20
+          minimum: 1
+          maximum: 100
+      - name: sort
+        in: query
+        required: false
+        description: |
+          Sort order for results. Prefix with - for descending.
+          Supported values: id, -id, createdAt, -createdAt.
+          Default: id (ascending by ID).
+        schema:
+          type: string
+          default: id
+          enum:
+          - id
+          - -id
+          - createdAt
+          - -createdAt
+      responses:
+        "200":
+          description: Paginated list of notes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    post:
+      operationId: createNote
+      description: |
+        Creates a note from JSON content.
+        Query parameters are not supported and unknown query parameters are rejected with HTTP 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewNote"
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /notes/{id}:
+    get:
+      operationId: getNote
+      description: |
+        Returns a note by its ID.
+        Query parameters are not supported and unknown query parameters are rejected with HTTP 400.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        "200":
+          description: note found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    put:
+      operationId: updateNote
+      description: |
+        Updates note content by ID.
+        Query parameters are not supported and unknown query parameters are rejected with HTTP 400.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewNote"
+      responses:
+        "200":
+          description: note updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+components:
+  schemas:
+    Note:
+      type: object
+      required: [ id, content, title, wordCount, createdAt, updatedAt ]
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+        title:
+          type: string
+        wordCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    NewNote:
+      type: object
+      additionalProperties: false
+      required: [ content ]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          pattern: ".*\\S.*"
+          maxLength: 10000
+
+    NoteList:
+      type: object
+      required: [ data, limit, hasMore ]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Note"
+        limit:
+          type: integer
+          description: Maximum results per page
+        hasMore:
+          type: boolean
+          description: Whether more results exist after this page
+        nextCursor:
+          type: string
+          description: Opaque cursor to pass as 'after' for the next page (present only when hasMore is true)
+
+    ErrorResponse:
+      type: object
+      required: [ error ]
+      properties:
+        error:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters or body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            invalidJson:
+              summary: Malformed JSON body
+              value:
+                error: invalid JSON body
+            invalidLimit:
+              summary: Invalid limit value
+              value:
+                error: invalid limit parameter
+            unknownQueryParam:
+              summary: Unsupported query parameter
+              value:
+                error: "unknown query parameter: foo"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            noteNotFound:
+              summary: Requested note does not exist
+              value:
+                error: note not found
+
+    PayloadTooLarge:
+      description: Request body too large
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            requestTooLarge:
+              summary: Body exceeded configured limit
+              value:
+                error: request body too large
+
+    InternalServerError:
+      description: Unexpected internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            internalError:
+              summary: Unhandled internal error
+              value:
+                error: internal server error

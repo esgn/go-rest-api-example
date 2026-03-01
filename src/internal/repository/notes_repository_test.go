@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -116,6 +117,24 @@ func TestUpdate(t *testing.T) {
 	got, _ := repo.GetByID(ctx, created.ID)
 	if got.Content != "updated content" {
 		t.Errorf("persisted Content = %q, want %q", got.Content, "updated content")
+	}
+}
+
+func TestUpdate_NotFound_DoesNotInsert(t *testing.T) {
+	repo := openTestDB(t)
+	ctx := context.Background()
+
+	missing := makeNote(1)
+	missing.ID = 999
+
+	_, err := repo.Update(ctx, missing)
+	if !errors.Is(err, service.ErrNoteNotFound) {
+		t.Fatalf("expected ErrNoteNotFound, got %v", err)
+	}
+
+	_, err = repo.GetByID(ctx, missing.ID)
+	if !errors.Is(err, service.ErrNoteNotFound) {
+		t.Fatalf("expected note to remain missing, got %v", err)
 	}
 }
 

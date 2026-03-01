@@ -90,6 +90,26 @@ func TestDeriveTitle(t *testing.T) {
 	}
 }
 
+func TestDeriveTitle_NonPositiveMaxTitleLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		maxTitleLen int
+	}{
+		{name: "zero max title length", maxTitleLen: 0},
+		{name: "negative max title length", maxTitleLen: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewNotesService(nil, Config{MaxTitleLength: tt.maxTitleLen})
+			got := svc.deriveTitle("hello world")
+			if got != "" {
+				t.Errorf("deriveTitle() = %q, want empty string", got)
+			}
+		})
+	}
+}
+
 // ── ParseSortOrder ───────────────────────────────────────────────────────────
 
 func TestParseSortOrder(t *testing.T) {
@@ -187,6 +207,72 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.MaxPageLimit != defaultMaxPageLimit {
 		t.Errorf("MaxPageLimit = %d, want %d", cfg.MaxPageLimit, defaultMaxPageLimit)
+	}
+}
+
+func TestValidateConfig(t *testing.T) {
+	valid := DefaultConfig()
+	if err := ValidateConfig(valid); err != nil {
+		t.Fatalf("valid default config should pass: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "MaxContentLength must be positive",
+			cfg: Config{
+				MaxContentLength: 0,
+				MaxTitleLength:   60,
+				DefaultPageLimit: 20,
+				MaxPageLimit:     100,
+			},
+		},
+		{
+			name: "MaxTitleLength must be positive",
+			cfg: Config{
+				MaxContentLength: 10000,
+				MaxTitleLength:   0,
+				DefaultPageLimit: 20,
+				MaxPageLimit:     100,
+			},
+		},
+		{
+			name: "DefaultPageLimit must be positive",
+			cfg: Config{
+				MaxContentLength: 10000,
+				MaxTitleLength:   60,
+				DefaultPageLimit: 0,
+				MaxPageLimit:     100,
+			},
+		},
+		{
+			name: "MaxPageLimit must be positive",
+			cfg: Config{
+				MaxContentLength: 10000,
+				MaxTitleLength:   60,
+				DefaultPageLimit: 20,
+				MaxPageLimit:     0,
+			},
+		},
+		{
+			name: "DefaultPageLimit must be <= MaxPageLimit",
+			cfg: Config{
+				MaxContentLength: 10000,
+				MaxTitleLength:   60,
+				DefaultPageLimit: 50,
+				MaxPageLimit:     10,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateConfig(tt.cfg); err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+		})
 	}
 }
 

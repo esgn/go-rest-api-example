@@ -15,6 +15,11 @@ const (
 	ListNotesParamsSortMinusId        ListNotesParamsSort = "-id"
 )
 
+// ErrorResponse defines model for ErrorResponse.
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
 // NewNote defines model for NewNote.
 type NewNote struct {
 	Content string `json:"content"`
@@ -43,6 +48,18 @@ type NoteList struct {
 	// NextCursor Opaque cursor to pass as 'after' for the next page (present only when hasMore is true)
 	NextCursor string `json:"nextCursor,omitempty"`
 }
+
+// BadRequest defines model for BadRequest.
+type BadRequest = ErrorResponse
+
+// InternalServerError defines model for InternalServerError.
+type InternalServerError = ErrorResponse
+
+// NotFound defines model for NotFound.
+type NotFound = ErrorResponse
+
+// PayloadTooLarge defines model for PayloadTooLarge.
+type PayloadTooLarge = ErrorResponse
 
 // ListNotesParams defines parameters for ListNotes.
 type ListNotesParams struct {

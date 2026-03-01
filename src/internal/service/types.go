@@ -67,6 +67,27 @@ func DefaultConfig() Config {
 	}
 }
 
+// ValidateConfig checks whether service configuration values are valid.
+// Call this at startup after environment overrides to fail fast on bad config.
+func ValidateConfig(cfg Config) error {
+	if cfg.MaxContentLength <= 0 {
+		return fmt.Errorf("invalid MaxContentLength: must be > 0")
+	}
+	if cfg.MaxTitleLength <= 0 {
+		return fmt.Errorf("invalid MaxTitleLength: must be > 0")
+	}
+	if cfg.DefaultPageLimit <= 0 {
+		return fmt.Errorf("invalid DefaultPageLimit: must be > 0")
+	}
+	if cfg.MaxPageLimit <= 0 {
+		return fmt.Errorf("invalid MaxPageLimit: must be > 0")
+	}
+	if cfg.DefaultPageLimit > cfg.MaxPageLimit {
+		return fmt.Errorf("invalid page limits: DefaultPageLimit must be <= MaxPageLimit")
+	}
+	return nil
+}
+
 // ── Domain model ─────────────────────────────────────────────────────────────
 
 // Note is the DOMAIN MODEL — the service layer's own representation of a note.

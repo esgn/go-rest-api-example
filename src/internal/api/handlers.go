@@ -23,6 +23,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"reflect"
+	"sort"
+	"strings"
 
 	gen "notes-api/internal/gen"
 	"notes-api/internal/service"
@@ -42,6 +45,11 @@ type NotesHandler struct {
 	maxBodyBytes int64 // upper bound on request body size (bytes)
 }
 
+var (
+	listNotesQueryParams = allowedQueryParamsFromStruct[gen.ListNotesParams]()
+	noQueryParams        = map[string]struct{}{}
+)
+
 // NewNotesHandler creates a handler wired to the given service.
 // maxBodyBytes caps the request body size before decoding; requests
 // exceeding this limit are rejected with HTTP 413 before any heap
@@ -57,6 +65,21 @@ func NewNotesHandler(svc *service.NotesService, maxBodyBytes int64) *NotesHandle
 // Handler responsibility: call the service with the pagination/sort params and
 // map the PaginatedNotes result → gen.NoteList (the API envelope).
 func (h *NotesHandler) ListNotes(w http.ResponseWriter, r *http.Request, params gen.ListNotesParams) {
+	if rejectUnknownQueryParams(w, r, listNotesQueryParams) {
+		return
+	}
+	// after is optional, but if explicitly provided as empty, reject it.
+	if _, provided := r.URL.Query()["after"]; provided && params.After == "" {
+		writeServiceError(w, service.ErrInvalidCursor)
+		return
+	}
+	// limit is optional, but if explicitly provided as 0, reject it to match
+	// the OpenAPI minimum constraint (minimum: 1).
+	if _, provided := r.URL.Query()["limit"]; provided && params.Limit == 0 {
+		writeServiceError(w, service.ErrInvalidLimit)
+		return
+	}
+
 	result, err := h.service.ListNotes(r.Context(), params.After, string(params.Sort), params.Limit)
 	if err != nil {
 		writeServiceError(w, err)
@@ -88,6 +111,10 @@ func (h *NotesHandler) ListNotes(w http.ResponseWriter, r *http.Request, params 
 // CreateNote parses the JSON body and delegates to the service.
 // The handler parses HTTP; the service validates and computes derived fields.
 func (h *NotesHandler) CreateNote(w http.ResponseWriter, r *http.Request) {
+	if rejectUnknownQueryParams(w, r, noQueryParams) {
+		return
+	}
+
 	// Cap body size before any read so an oversized payload is rejected
 	// immediately rather than being buffered into heap memory.
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
@@ -136,6 +163,10 @@ func (h *NotesHandler) CreateNote(w http.ResponseWriter, r *http.Request) {
 // GetNote retrieves a single note by its ID.
 // The generated wrapper extracts and parses the {id} path parameter for us.
 func (h *NotesHandler) GetNote(w http.ResponseWriter, r *http.Request, id int) {
+	if rejectUnknownQueryParams(w, r, noQueryParams) {
+		return
+	}
+
 	note, err := h.service.GetNote(r.Context(), id)
 	if err != nil {
 		writeServiceError(w, err)
@@ -150,6 +181,10 @@ func (h *NotesHandler) GetNote(w http.ResponseWriter, r *http.Request, id int) {
 // UpdateNote parses the JSON body and delegates to the service.
 // The generated wrapper extracts and parses the {id} path parameter for us.
 func (h *NotesHandler) UpdateNote(w http.ResponseWriter, r *http.Request, id int) {
+	if rejectUnknownQueryParams(w, r, noQueryParams) {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
 	defer r.Body.Close()
 
@@ -236,4 +271,44 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 // It wraps the message in {"error": message} for consistent error formatting.
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// rejectUnknownQueryParams validates query keys against an allow-list and
+// writes a 400 response when an unsupported key is present.
+func rejectUnknownQueryParams(w http.ResponseWriter, r *http.Request, allowed map[string]struct{}) bool {
+	query := r.URL.Query()
+	unknown := make([]string, 0, len(query))
+	for key := range query {
+		if _, ok := allowed[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return false
+	}
+
+	sort.Strings(unknown)
+	writeError(w, http.StatusBadRequest, "unknown query parameter: "+unknown[0])
+	return true
+}
+
+// allowedQueryParamsFromStruct derives allowed query keys from generated form tags.
+// It keeps query validation aligned with regenerated oapi parameter structs.
+func allowedQueryParamsFromStruct[T any]() map[string]struct{} {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	allowed := make(map[string]struct{}, t.NumField())
+
+	for i := 0; i < t.NumField(); i++ {
+		formTag := t.Field(i).Tag.Get("form")
+		if formTag == "" || formTag == "-" {
+			continue
+		}
+		key := strings.Split(formTag, ",")[0]
+		if key == "" {
+			continue
+		}
+		allowed[key] = struct{}{}
+	}
+
+	return allowed
 }

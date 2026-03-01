@@ -1,0 +1,11 @@
+# Local database files
+*.db
+
+# Environment files (may contain secrets)
+.env
+
+# Virtual environment directories
+venv/
+
+# schemathesis hypothesis
+.hypothesis/
