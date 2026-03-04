@@ -40,7 +40,7 @@ func newTestHTTPHandler(mock *testutil.MockNotesStore, maxBodyBytes int64) http.
 	return gen.HandlerWithOptions(strictServer, gen.StdHTTPServerOptions{
 		Middlewares: []gen.MiddlewareFunc{
 			middleware.RejectUnknownJSONFields(),
-			middleware.EnforceQueryRules(512, cfg.MaxPageLimit),
+			middleware.EnforceQueryRules(middleware.DefaultMaxAfterCursorLength, cfg.MaxPageLimit),
 			middleware.RejectUnknownQueryParams(),
 			middleware.EnforceBodyAndContentType(maxBodyBytes),
 		},

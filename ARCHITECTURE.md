@@ -28,6 +28,25 @@ Design rule:
 - Outer layers can depend on inner layers.
 - Inner layers must not import outer layers.
 
+## Architecture Diagram (Mermaid)
+
+```mermaid
+flowchart LR
+    client[HTTP Client]
+
+    subgraph api[API Process]
+        main[cmd/api/main.go]
+        mw[Middleware Chain]
+        gen[Strict Generated Adapter<br/>internal/gen/server.gen.go]
+        handlers[Handlers<br/>internal/api]
+        service[Service<br/>internal/service]
+        repo[Repository<br/>internal/repository]
+        db[DB Layer<br/>internal/db + SQLite]
+    end
+
+    client --> main --> mw --> gen --> handlers --> service --> repo --> db
+```
+
 ## Request Lifecycle
 
 For `GET /notes`, `POST /notes`, `GET /notes/{id}`, `PUT /notes/{id}`:

@@ -3,6 +3,19 @@
 // "Composition root" means this is where we wire concrete implementations:
 // HTTP server + strict OpenAPI adapter + middleware + service + repository + DB.
 // No business logic should live here; main only assembles and starts the app.
+//
+// Request workflow (runtime order):
+//  1) Generated router matches method/path to an operation.
+//  2) For operations with path/query params, generated binding/parsing runs first.
+//  3) Std middleware chain runs (runtime: RequestLogger -> body/content-type guard
+//     -> unknown-query guard -> query-rule guard -> unknown-JSON-field guard).
+//  4) Strict adapter decodes JSON body for write operations.
+//  5) API handler translates request DTOs to service calls.
+//  6) Service enforces business rules and orchestrates use cases.
+//  7) Repository persists/fetches data through DB layer.
+//  8) Handler maps domain errors to HTTP responses.
+//  9) Strict adapter writes typed responses; request/response adapter errors go to
+//     configured strict error handlers, and router bind errors go to router error handler.
 package main
 
 import (
@@ -66,7 +79,8 @@ func main() {
 	}
 	defer sqlDB.Close()
 
-	// Run schema migration at startup.
+	// Run schema migration at startup
+	// In production, a separate migration process is often preferred
 	if err := db.Migrate(ctx, database); err != nil {
 		log.Fatalf("database migration failed: %v", err)
 	}
@@ -77,10 +91,9 @@ func main() {
 	noteService := service.NewNotesService(noteRepo, svcCfg)
 	noteHandlers := handlers.NewNotesHandler(noteService)
 
-	// Keep request-size cap aligned with old JSON decoder behavior:
-	// max bytes ~= max UTF-8 payload size for content + tiny JSON overhead.
-	maxBodyBytes := int64(svcCfg.MaxContentLength)*4 + 512
-	maxAfterCursorLength := 512
+	// Keep transport validation limits centralized in middleware package.
+	maxBodyBytes := middleware.MaxBodyBytesForMaxContentLength(svcCfg.MaxContentLength)
+	maxAfterCursorLength := middleware.DefaultMaxAfterCursorLength
 
 	// Strict handler validates/coerces request/response objects generated from OpenAPI.
 	strictServer := gen.NewStrictHandlerWithOptions(noteHandlers, nil, gen.StrictHTTPServerOptions{
@@ -100,6 +113,8 @@ func main() {
 	server := &http.Server{
 		Addr: httpAddr,
 		Handler: gen.HandlerWithOptions(strictServer, gen.StdHTTPServerOptions{
+			// Registered in reverse of runtime execution; together these enforce
+			// transport-level validation and request logging.
 			Middlewares: []gen.MiddlewareFunc{
 				middleware.RejectUnknownJSONFields(),
 				middleware.EnforceQueryRules(maxAfterCursorLength, svcCfg.MaxPageLimit),
@@ -107,11 +122,15 @@ func main() {
 				middleware.EnforceBodyAndContentType(maxBodyBytes),
 				middleware.RequestLogger(),
 			},
+			// Handles generated router/binding failures before handlers run.
+			// Contract stays a 400 JSON error payload.
 			ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 				logx.Warnf("msg=%q method=%s path=%s err=%q", "router_bind_error", r.Method, r.URL.Path, err.Error())
 				writeJSONError(w, http.StatusBadRequest, err.Error())
 			},
 		}),
+		// Header timeout limits slow header delivery; read/write timeouts bound
+		// full request I/O; idle timeout limits keep-alive connection idleness.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
