@@ -92,6 +92,8 @@ func main() {
 	// Build the layered dependencies:
 	// repository -> service -> strict HTTP handlers.
 	noteRepo := repository.NewNotesRepository(database)
+	// passing noteRepo into that function forces the compiler to verify interface compatibility at startup
+	// so we get a compile-time error if the repo doesn't satisfy the service's expected interface.
 	noteService := service.NewNotesService(noteRepo, svcCfg)
 	noteHandlers := handlers.NewNotesHandler(noteService)
 
