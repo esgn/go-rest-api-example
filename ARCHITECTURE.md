@@ -13,7 +13,7 @@ This document describes the architecture of the `src` API implementation and the
 
 Current flow:
 
-`main -> middleware -> strict generated adapter -> handlers -> service -> repository -> db`
+`main -> generated router + path/query pre-bind -> middleware -> strict adapter (typed request/body decode) -> handlers -> service -> repository -> db`
 
 Dependency direction:
 
@@ -36,15 +36,16 @@ flowchart LR
 
     subgraph api[API Process]
         main[cmd/api/main.go]
+        prebind[Generated Router + Path/Query Pre-Bind]
         mw[Middleware Chain]
-        gen[Strict Generated Adapter<br/>internal/gen/server.gen.go]
+        strict[Strict Adapter<br/>Typed Request + JSON Body Decode]
         handlers[Handlers<br/>internal/api]
         service[Service<br/>internal/service]
         repo[Repository<br/>internal/repository]
         db[DB Layer<br/>internal/db + SQLite]
     end
 
-    client --> main --> mw --> gen --> handlers --> service --> repo --> db
+    client --> main --> prebind --> mw --> strict --> handlers --> service --> repo --> db
 ```
 
 ## Request Lifecycle
@@ -52,13 +53,21 @@ flowchart LR
 For `GET /notes`, `POST /notes`, `GET /notes/{id}`, `PUT /notes/{id}`:
 
 1. HTTP request enters generated router (`internal/gen/server.gen.go`).
-2. Standard middleware chain runs (reverse wrapping in generated code).
-3. Strict generated bindings decode query/path/body into typed request objects.
-4. Handlers translate typed request objects to service calls.
-5. Service applies domain rules and orchestrates use cases.
-6. Repository performs persistence and maps errors/types.
-7. Handler maps domain errors to API response objects.
-8. Strict response wrapper writes typed response payload.
+2. Generated pre-middleware binding parses path/query params (only on operations that have them).
+3. Standard middleware chain runs (reverse wrapping in generated code).
+4. Strict adapter builds typed request objects; for write ops it decodes JSON body.
+5. Handlers translate typed request objects to service calls.
+6. Service applies domain rules and orchestrates use cases.
+7. Repository performs persistence and maps errors/types.
+8. Handler maps domain errors to API response objects.
+9. Strict response wrapper writes typed response payload.
+
+Important nuance:
+
+- Middleware executes before strict body decode and before handler logic.
+- Path/query parse errors can happen before middleware because generated pre-bind runs first.
+- Generated pre-bind is mainly required/type/format coercion; it does not enforce
+  most schema constraints such as maxLength, numeric bounds, or enum semantics.
 
 ## Middleware Order (Important)
 
@@ -81,7 +90,11 @@ Effective runtime order:
 3. `RejectUnknownQueryParams`
 4. `EnforceQueryRules`
 5. `RejectUnknownJSONFields`
-6. Generated strict bind/decode + handler
+6. Strict typed request/body decode + handler
+
+Pre-step before this list for operations with path/query params:
+
+1. Generated path/query parsing (`id`, `limit`, etc.) runs before middleware.
 
 ## Validation Ownership Matrix
 
@@ -90,7 +103,7 @@ Single owner per rule (target state and current behavior):
 | Rule | Owner |
 |---|---|
 | Method/path routing | generated router |
-| Primitive param binding (`id`, `limit` int parsing) | strict generated binder |
+| Primitive param binding (`id`, `limit` int parsing) | generated pre-middleware binder |
 | Request JSON decode and required body | strict generated decoder |
 | Unknown query keys | `RejectUnknownQueryParams` middleware |
 | Query constraints (`after` empty/max length, `limit` range) | `EnforceQueryRules` middleware |
@@ -107,6 +120,8 @@ Notes:
 
 - Strict mode provides typed request/response wrappers, not full schema keyword validation.
 - Some schema semantics are intentionally enforced in middleware/service to keep behavior explicit.
+- Practical split: generated binders reject malformed types (for example `limit=abc`);
+  middleware/service enforce constraint semantics (for example `limit > max`, `after` length, allowed sort values).
 
 ## Error Handling
 
@@ -117,7 +132,8 @@ Error contract:
 Ownership:
 
 - Middleware rejects transport-level issues with `400/413/415`.
-- Strict request/bind errors are mapped through configured request/error handlers.
+- Generated pre-middleware path/query bind errors go through router `ErrorHandlerFunc`.
+- Strict request/response adapter errors go through strict request/response handlers.
 - Handler maps domain sentinel errors to expected HTTP statuses.
 - Unhandled errors become `500 internal server error`.
 

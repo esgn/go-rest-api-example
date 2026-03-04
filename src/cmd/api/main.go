@@ -6,16 +6,20 @@
 //
 // Request workflow (runtime order):
 //  1) Generated router matches method/path to an operation.
-//  2) For operations with path/query params, generated binding/parsing runs first.
+//  2) Generated pre-middleware binding runs for path/query params (when present).
+//     Example: GET /notes?limit=abc fails here before custom middleware runs.
+//     This step does binding/coercion (required + type/format), not schema constraints
+//     like maxLength/min/max/enum semantics.
 //  3) Std middleware chain runs (runtime: RequestLogger -> body/content-type guard
 //     -> unknown-query guard -> query-rule guard -> unknown-JSON-field guard).
-//  4) Strict adapter decodes JSON body for write operations.
-//  5) API handler translates request DTOs to service calls.
+//  4) Strict adapter builds typed request objects; for write operations it decodes JSON body.
+//  5) API handler translates typed request DTOs to service calls.
 //  6) Service enforces business rules and orchestrates use cases.
 //  7) Repository persists/fetches data through DB layer.
 //  8) Handler maps domain errors to HTTP responses.
-//  9) Strict adapter writes typed responses; request/response adapter errors go to
-//     configured strict error handlers, and router bind errors go to router error handler.
+//  9) Strict adapter writes typed responses.
+// 10) Errors from step 2 go to router ErrorHandlerFunc; errors from steps 4/9 go to
+//     strict request/response error handlers.
 package main
 
 import (
