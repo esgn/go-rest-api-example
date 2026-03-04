@@ -28,6 +28,32 @@ Design rule:
 - Outer layers can depend on inner layers.
 - Inner layers must not import outer layers.
 
+### Dependency Inversion In This Repo
+
+Two directions exist and they are different:
+
+- Runtime call flow: `handler -> service -> repository -> db`
+- Compile-time imports: `api imports service`, `repository imports service`, `service imports no repository/db package`
+
+Why `repository` imports `service`:
+
+- `service` owns the port interface (`NotesStore`) and domain-facing types.
+- `repository` is an infrastructure adapter that implements that port.
+- Go interfaces are structural, so `NotesRepository` satisfies `service.NotesStore`
+  by method set; no explicit `implements` keyword is required.
+- `main` composes concrete wiring (`noteRepo -> NewNotesService(noteRepo, ...)`).
+
+Why this matters:
+
+- Business logic remains independent from GORM/SQLite.
+- Service tests can run with mocks/fakes without touching a real database.
+- Storage can be swapped (SQLite/Postgres/in-memory) without changing service logic.
+
+What would violate the rule:
+
+- `service` importing `repository` or `gorm`.
+- Business validation/derivations moving into repository code.
+
 ## Architecture Diagram (Mermaid)
 
 ```mermaid

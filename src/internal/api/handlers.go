@@ -21,6 +21,7 @@ import (
 	"notes-api/internal/service"
 )
 
+// this compile-time assertion ensures NotesHandler implements the strict server interface
 var _ gen.StrictServerInterface = (*NotesHandler)(nil)
 
 // NotesHandler translates strict OpenAPI request/response objects to service calls.
