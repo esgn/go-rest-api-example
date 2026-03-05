@@ -1,10 +1,9 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
-
-	"notes-api/internal/logx"
 )
 
 // RequestLogger logs one line per HTTP request with status and duration.
@@ -17,12 +16,12 @@ func RequestLogger() func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rec, r)
 
-			level := "INFO"
+			level := slog.LevelInfo
 			switch {
 			case rec.status >= 500:
-				level = "ERROR"
+				level = slog.LevelError
 			case rec.status >= 400:
-				level = "WARN"
+				level = slog.LevelWarn
 			}
 
 			reqID := r.Header.Get("X-Request-Id")
@@ -30,47 +29,16 @@ func RequestLogger() func(http.Handler) http.Handler {
 				reqID = "-"
 			}
 
-			switch level {
-			case "ERROR":
-				logx.Errorf(
-					"msg=%q method=%s path=%s status=%d bytes=%d duration_ms=%d remote=%q ua=%q req_id=%q",
-					"http_request",
-					r.Method,
-					r.URL.Path,
-					rec.status,
-					rec.bytes,
-					time.Since(start).Milliseconds(),
-					r.RemoteAddr,
-					r.UserAgent(),
-					reqID,
-				)
-			case "WARN":
-				logx.Warnf(
-					"msg=%q method=%s path=%s status=%d bytes=%d duration_ms=%d remote=%q ua=%q req_id=%q",
-					"http_request",
-					r.Method,
-					r.URL.Path,
-					rec.status,
-					rec.bytes,
-					time.Since(start).Milliseconds(),
-					r.RemoteAddr,
-					r.UserAgent(),
-					reqID,
-				)
-			default:
-				logx.Infof(
-					"msg=%q method=%s path=%s status=%d bytes=%d duration_ms=%d remote=%q ua=%q req_id=%q",
-					"http_request",
-					r.Method,
-					r.URL.Path,
-					rec.status,
-					rec.bytes,
-					time.Since(start).Milliseconds(),
-					r.RemoteAddr,
-					r.UserAgent(),
-					reqID,
-				)
-			}
+			slog.Log(r.Context(), level, "http_request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"bytes", rec.bytes,
+				"duration_ms", time.Since(start).Milliseconds(),
+				"remote", r.RemoteAddr,
+				"ua", r.UserAgent(),
+				"req_id", reqID,
+			)
 		})
 	}
 }

@@ -15,9 +15,9 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	gen "notes-api/internal/gen"
-	"notes-api/internal/logx"
 	"notes-api/internal/service"
 )
 
@@ -159,14 +159,12 @@ func listNotesErrorResponse(err error, after, sort string, limit int) gen.ListNo
 	case errors.Is(err, service.ErrInvalidLimit):
 		return badRequestList(service.ErrInvalidLimit.Error())
 	default:
-		logx.Errorf(
-			"msg=%q operation=%s after_present=%t sort=%q limit=%d err=%q",
-			"unhandled_service_error",
-			"ListNotes",
-			after != "",
-			sort,
-			limit,
-			err.Error(),
+		slog.Error("unhandled_service_error",
+			"operation", "ListNotes",
+			"after_present", after != "",
+			"sort", sort,
+			"limit", limit,
+			"err", err.Error(),
 		)
 		return gen.ListNotes500JSONResponse{
 			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
@@ -186,11 +184,9 @@ func createNoteErrorResponse(err error) gen.CreateNoteResponseObject {
 			BadRequestJSONResponse: gen.BadRequestJSONResponse{Error: service.ErrContentTooLong.Error()},
 		}
 	default:
-		logx.Errorf(
-			"msg=%q operation=%s err=%q",
-			"unhandled_service_error",
-			"CreateNote",
-			err.Error(),
+		slog.Error("unhandled_service_error",
+			"operation", "CreateNote",
+			"err", err.Error(),
 		)
 		return gen.CreateNote500JSONResponse{
 			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
@@ -206,12 +202,10 @@ func getNoteErrorResponse(id int, err error) gen.GetNoteResponseObject {
 			NotFoundJSONResponse: gen.NotFoundJSONResponse{Error: service.ErrNoteNotFound.Error()},
 		}
 	default:
-		logx.Errorf(
-			"msg=%q operation=%s note_id=%d err=%q",
-			"unhandled_service_error",
-			"GetNote",
-			id,
-			err.Error(),
+		slog.Error("unhandled_service_error",
+			"operation", "GetNote",
+			"note_id", id,
+			"err", err.Error(),
 		)
 		return gen.GetNote500JSONResponse{
 			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},
@@ -235,12 +229,10 @@ func updateNoteErrorResponse(id int, err error) gen.UpdateNoteResponseObject {
 			NotFoundJSONResponse: gen.NotFoundJSONResponse{Error: service.ErrNoteNotFound.Error()},
 		}
 	default:
-		logx.Errorf(
-			"msg=%q operation=%s note_id=%d err=%q",
-			"unhandled_service_error",
-			"UpdateNote",
-			id,
-			err.Error(),
+		slog.Error("unhandled_service_error",
+			"operation", "UpdateNote",
+			"note_id", id,
+			"err", err.Error(),
 		)
 		return gen.UpdateNote500JSONResponse{
 			InternalServerErrorJSONResponse: gen.InternalServerErrorJSONResponse{Error: "internal server error"},

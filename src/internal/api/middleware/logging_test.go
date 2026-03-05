@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"bytes"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -12,7 +12,7 @@ import (
 
 func TestRequestLogger_DefaultStatus200(t *testing.T) {
 	var buf bytes.Buffer
-	restore := swapLogOutput(&buf)
+	restore := swapSlogOutput(&buf)
 	defer restore()
 
 	h := RequestLogger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,12 +28,12 @@ func TestRequestLogger_DefaultStatus200(t *testing.T) {
 	}
 
 	out := buf.String()
-	assertContains(t, out, "msg=\"http_request\"")
+	assertContains(t, out, "msg=http_request")
 	assertContains(t, out, "method=GET")
 	assertContains(t, out, "path=/notes")
 	assertContains(t, out, "status=200")
 	assertContains(t, out, "bytes=2")
-	assertContains(t, out, "req_id=\"-\"")
+	assertContains(t, out, "req_id=-")
 }
 
 func TestRequestLogger_StatusLevelAndRequestID(t *testing.T) {
@@ -52,7 +52,7 @@ func TestRequestLogger_StatusLevelAndRequestID(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			restore := swapLogOutput(&buf)
+			restore := swapSlogOutput(&buf)
 			defer restore()
 
 			h := RequestLogger()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +71,9 @@ func TestRequestLogger_StatusLevelAndRequestID(t *testing.T) {
 			assertContains(t, out, "level="+tc.wantLevel)
 			assertContains(t, out, "status="+strconv.Itoa(tc.status))
 			if tc.setRequestID {
-				assertContains(t, out, "req_id=\"req-123\"")
+				assertContains(t, out, "req_id=req-123")
 			} else {
-				assertContains(t, out, "req_id=\"-\"")
+				assertContains(t, out, "req_id=-")
 			}
 		})
 	}
@@ -86,10 +86,12 @@ func assertContains(t *testing.T, haystack, needle string) {
 	}
 }
 
-func swapLogOutput(buf *bytes.Buffer) func() {
-	orig := log.Writer()
-	log.SetOutput(buf)
+func swapSlogOutput(buf *bytes.Buffer) func() {
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
 	return func() {
-		log.SetOutput(orig)
+		slog.SetDefault(orig)
 	}
 }

@@ -1,9 +1,8 @@
 package main
 
 import (
+	"log/slog"
 	"testing"
-
-	"notes-api/internal/logx"
 )
 
 // ── envOrDefault ─────────────────────────────────────────────────────────────
@@ -108,37 +107,37 @@ func TestLoadServiceConfigFromEnv_InvalidConfig(t *testing.T) {
 }
 
 func TestConfigureLogLevel_DefaultsToInfo(t *testing.T) {
-	prev := logx.CurrentLevel()
-	defer logx.SetLevel(prev)
+	prev := appLogLevel.Level()
+	defer appLogLevel.Set(prev)
 
 	t.Setenv("LOG_LEVEL", "")
 	configureLogLevel()
 
-	if got := logx.CurrentLevel(); got != logx.LevelInfo {
-		t.Fatalf("level = %v, want %v", got, logx.LevelInfo)
+	if got := appLogLevel.Level(); got != slog.LevelInfo {
+		t.Fatalf("level = %v, want %v", got, slog.LevelInfo)
 	}
 }
 
 func TestConfigureLogLevel_ValidValue(t *testing.T) {
-	prev := logx.CurrentLevel()
-	defer logx.SetLevel(prev)
+	prev := appLogLevel.Level()
+	defer appLogLevel.Set(prev)
 
 	t.Setenv("LOG_LEVEL", "warn")
 	configureLogLevel()
 
-	if got := logx.CurrentLevel(); got != logx.LevelWarn {
-		t.Fatalf("level = %v, want %v", got, logx.LevelWarn)
+	if got := appLogLevel.Level(); got != slog.LevelWarn {
+		t.Fatalf("level = %v, want %v", got, slog.LevelWarn)
 	}
 }
 
 func TestConfigureLogLevel_InvalidFallsBackToInfo(t *testing.T) {
-	prev := logx.CurrentLevel()
-	defer logx.SetLevel(prev)
+	prev := appLogLevel.Level()
+	defer appLogLevel.Set(prev)
 
 	t.Setenv("LOG_LEVEL", "nope")
 	configureLogLevel()
 
-	if got := logx.CurrentLevel(); got != logx.LevelInfo {
-		t.Fatalf("level = %v, want %v", got, logx.LevelInfo)
+	if got := appLogLevel.Level(); got != slog.LevelInfo {
+		t.Fatalf("level = %v, want %v", got, slog.LevelInfo)
 	}
 }

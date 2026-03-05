@@ -5,20 +5,20 @@
 // No business logic should live here; main only assembles and starts the app.
 //
 // Request workflow (runtime order):
-//  1) Generated router matches method/path to an operation.
-//  2) Generated pre-middleware binding runs for path/query params (when present).
+//  1. Generated router matches method/path to an operation.
+//  2. Generated pre-middleware binding runs for path/query params (when present).
 //     Example: GET /notes?limit=abc fails here before custom middleware runs.
 //     This step does binding/coercion (required + type/format), not schema constraints
 //     like maxLength/min/max/enum semantics.
-//  3) Std middleware chain runs (runtime: RequestLogger -> body/content-type guard
+//  3. Std middleware chain runs (runtime: RequestLogger -> body/content-type guard
 //     -> unknown-query guard -> query-rule guard -> unknown-JSON-field guard).
-//  4) Strict adapter builds typed request objects; for write operations it decodes JSON body.
-//  5) API handler translates typed request DTOs to service calls.
-//  6) Service enforces business rules and orchestrates use cases.
-//  7) Repository persists/fetches data through DB layer.
-//  8) Handler maps domain errors to HTTP responses.
-//  9) Strict adapter writes typed responses.
-// 10) Errors from step 2 go to router ErrorHandlerFunc; errors from steps 4/9 go to
+//  4. Strict adapter builds typed request objects; for write operations it decodes JSON body.
+//  5. API handler translates typed request DTOs to service calls.
+//  6. Service enforces business rules and orchestrates use cases.
+//  7. Repository persists/fetches data through DB layer.
+//  8. Handler maps domain errors to HTTP responses.
+//  9. Strict adapter writes typed responses.
+//  10. Errors from step 2 go to router ErrorHandlerFunc; errors from steps 4/9 go to
 //     strict request/response error handlers.
 package main
 
@@ -27,10 +27,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,10 +42,11 @@ import (
 	"notes-api/internal/api/middleware"
 	"notes-api/internal/db"
 	gen "notes-api/internal/gen"
-	"notes-api/internal/logx"
 	"notes-api/internal/repository"
 	"notes-api/internal/service"
 )
+
+var appLogLevel = new(slog.LevelVar)
 
 func main() {
 	// Load .env when present (local dev convenience).
@@ -104,11 +107,19 @@ func main() {
 	// Strict handler validates/coerces request/response objects generated from OpenAPI.
 	strictServer := gen.NewStrictHandlerWithOptions(noteHandlers, nil, gen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-			logx.Warnf("msg=%q method=%s path=%s err=%q", "strict_request_error", r.Method, r.URL.Path, err.Error())
+			slog.Warn("strict_request_error",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"err", err.Error(),
+			)
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 		},
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-			logx.Errorf("msg=%q method=%s path=%s err=%q", "strict_response_error", r.Method, r.URL.Path, err.Error())
+			slog.Error("strict_response_error",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"err", err.Error(),
+			)
 			writeJSONError(w, http.StatusInternalServerError, "internal server error")
 		},
 	})
@@ -131,7 +142,11 @@ func main() {
 			// Handles generated router/binding failures before handlers run.
 			// Contract stays a 400 JSON error payload.
 			ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-				logx.Warnf("msg=%q method=%s path=%s err=%q", "router_bind_error", r.Method, r.URL.Path, err.Error())
+				slog.Warn("router_bind_error",
+					"method", r.Method,
+					"path", r.URL.Path,
+					"err", err.Error(),
+				)
 				writeJSONError(w, http.StatusBadRequest, err.Error())
 			},
 		}),
@@ -150,11 +165,11 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			logx.Errorf("msg=%q err=%q", "http_shutdown_error", err.Error())
+			slog.Error("http_shutdown_error", "err", err.Error())
 		}
 	}()
 
-	logx.Infof("msg=%q http_addr=%q sqlite_path=%q", "notes_api_listening", httpAddr, sqlitePath)
+	slog.Info("notes_api_listening", "http_addr", httpAddr, "sqlite_path", sqlitePath)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("http server failed: %v", err)
 	}
@@ -162,12 +177,21 @@ func main() {
 
 func configureLogLevel() {
 	raw := envOrDefault("LOG_LEVEL", "info")
-	if err := logx.SetLevelFromString(raw); err != nil {
-		logx.SetLevel(logx.LevelInfo)
-		logx.Warnf("msg=%q value=%q fallback=%q", "invalid_log_level", raw, "info")
-		return
+	level, err := parseLogLevel(raw)
+	if err != nil {
+		level = slog.LevelInfo
 	}
-	logx.Infof("msg=%q log_level=%q", "log_level_configured", logx.CurrentLevel().String())
+
+	appLogLevel.Set(level)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: appLogLevel,
+	})))
+
+	if err != nil {
+		slog.Warn("invalid_log_level", "value", raw, "fallback", "info")
+	}
+
+	slog.Info("log_level_configured", "log_level", strings.ToUpper(level.String()))
 }
 
 // envOrDefault returns the environment value when set, otherwise fallback.
@@ -203,10 +227,25 @@ func envOrDefaultInt(name string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		logx.Warnf("msg=%q env=%s value=%q fallback=%d", "invalid_integer_env", name, value, fallback)
+		slog.Warn("invalid_integer_env", "env", name, "value", value, "fallback", fallback)
 		return fallback
 	}
 	return parsed
+}
+
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, errors.New("invalid log level")
+	}
 }
 
 // writeJSONError keeps error responses consistent across startup/router hooks.

@@ -165,7 +165,7 @@ Ownership:
 
 ## Logging
 
-Logging is centralized via `internal/logx` with level filtering.
+Logging is centralized via Go `log/slog` with level filtering.
 
 Configured by:
 
