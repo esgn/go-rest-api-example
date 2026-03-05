@@ -17,8 +17,8 @@ import (
 	"errors"
 	"log/slog"
 
-	gen "notes-api/internal/gen"
-	"notes-api/internal/service"
+	gen "notes-api/internal/http/openapi"
+	"notes-api/internal/notes/service"
 )
 
 // this compile-time assertion ensures NotesHandler implements the strict server interface

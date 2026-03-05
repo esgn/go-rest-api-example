@@ -11,8 +11,8 @@ import (
 
 // internalMock is a simple in-package mock for NotesStore, used by service
 // method tests that live in package service (so they can also access
-// unexported helpers). The shared testutil.MockNotesStore is used by
-// external packages (handlers, etc.).
+// unexported helpers). External packages (for example HTTP handler tests)
+// keep their own local mocks in their test package.
 type internalMock struct {
 	ListFn    func(ctx context.Context, params ListParams) ([]Note, error)
 	GetByIDFn func(ctx context.Context, id int) (Note, error)

@@ -2,9 +2,9 @@
 // sentinel errors, configuration, the domain model, pagination types,
 // and the store interface.
 //
-// Keeping types in a dedicated file mirrors the same convention used in
-// internal/model/note.go: each layer owns a types file so definitions
-// are easy to locate without scrolling through business logic.
+// Keeping types in a dedicated file mirrors the same convention used across
+// layers: each layer owns a types file so definitions are easy to locate
+// without scrolling through business logic.
 package service
 
 import (
@@ -95,7 +95,7 @@ func ValidateConfig(cfg Config) error {
 // Notice it has NO tags (no `json:"..."`, no `gorm:"..."`). It's a plain Go
 // struct. This is intentional:
 //   - gen.Note (in the gen package) has JSON tags for the HTTP API
-//   - model.Note (in the model package) has GORM tags for the database
+//   - db/schema.NoteRecord has GORM tags for the database
 //   - service.Note is tag-free because the service doesn't care about
 //     serialization or storage — it only cares about business logic.
 type Note struct {

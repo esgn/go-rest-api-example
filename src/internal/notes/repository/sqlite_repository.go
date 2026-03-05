@@ -11,7 +11,7 @@
 //
 // Notice that the repository does ZERO validation or computation. It doesn't
 // check if content is empty, it doesn't compute titles, it doesn't count words.
-// It just maps between model.Note (database struct) and service.Note (domain
+// It just maps between dbschema.NoteRecord (database struct) and service.Note (domain
 // struct), and runs GORM queries. That's it.
 package repository
 
@@ -20,20 +20,20 @@ import (
 	"errors"
 	"fmt"
 
-	"notes-api/internal/model"
-	"notes-api/internal/service"
+	"notes-api/internal/notes/service"
+	dbschema "notes-api/internal/platform/db/schema"
 
 	"gorm.io/gorm"
 )
 
-// NotesRepository is the concrete implementation of service.NotesStore.
-type NotesRepository struct {
+// SQLiteNotesRepository is the concrete implementation of service.NotesStore.
+type SQLiteNotesRepository struct {
 	db *gorm.DB
 }
 
-// NewNotesRepository creates a new NotesRepository with the given DB handle.
-func NewNotesRepository(db *gorm.DB) *NotesRepository {
-	return &NotesRepository{db: db}
+// NewSQLiteNotesRepository creates a new SQLiteNotesRepository with the given DB handle.
+func NewSQLiteNotesRepository(db *gorm.DB) *SQLiteNotesRepository {
+	return &SQLiteNotesRepository{db: db}
 }
 
 // List retrieves a page of notes using cursor-based pagination with sort support.
@@ -41,8 +41,8 @@ func NewNotesRepository(db *gorm.DB) *NotesRepository {
 // a composite WHERE clause like (created_at, id) > (?, ?) ensures stable
 // pagination even when the sort column has duplicate values (the ID tiebreaker
 // guarantees uniqueness).
-func (r *NotesRepository) List(ctx context.Context, params service.ListParams) ([]service.Note, error) {
-	var records []model.Note
+func (r *SQLiteNotesRepository) List(ctx context.Context, params service.ListParams) ([]service.Note, error) {
+	var records []dbschema.NoteRecord
 
 	query := r.db.WithContext(ctx)
 
@@ -102,8 +102,8 @@ func (r *NotesRepository) List(ctx context.Context, params service.ListParams) (
 // KEY POINT: The repository translates GORM's gorm.ErrRecordNotFound into the
 // service layer's ErrNoteNotFound. This way, the service layer doesn't need to
 // know about GORM error types — it only deals with its own domain errors.
-func (r *NotesRepository) GetByID(ctx context.Context, id int) (service.Note, error) {
-	var record model.Note
+func (r *SQLiteNotesRepository) GetByID(ctx context.Context, id int) (service.Note, error) {
+	var record dbschema.NoteRecord
 	if err := r.db.WithContext(ctx).First(&record, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Translate GORM error → domain error
@@ -117,7 +117,7 @@ func (r *NotesRepository) GetByID(ctx context.Context, id int) (service.Note, er
 // Create inserts a new note into the database.
 // The service has already computed Title, WordCount, and timestamps.
 // The repository just stores whatever it receives — no business logic here.
-func (r *NotesRepository) Create(ctx context.Context, note service.Note) (service.Note, error) {
+func (r *SQLiteNotesRepository) Create(ctx context.Context, note service.Note) (service.Note, error) {
 	record := toModelNote(note)
 	if err := r.db.WithContext(ctx).Create(&record).Error; err != nil {
 		return service.Note{}, fmt.Errorf("insert note: %w", err)
@@ -129,9 +129,9 @@ func (r *NotesRepository) Create(ctx context.Context, note service.Note) (servic
 // Update saves changes to an existing note in the database.
 // It performs a strict UPDATE by primary key and returns ErrNoteNotFound when
 // no row matches, avoiding GORM Save()'s upsert behavior.
-func (r *NotesRepository) Update(ctx context.Context, note service.Note) (service.Note, error) {
+func (r *SQLiteNotesRepository) Update(ctx context.Context, note service.Note) (service.Note, error) {
 	result := r.db.WithContext(ctx).
-		Model(&model.Note{}).
+		Model(&dbschema.NoteRecord{}).
 		Where("id = ?", note.ID).
 		Updates(map[string]interface{}{
 			"content":    note.Content,
@@ -149,17 +149,17 @@ func (r *NotesRepository) Update(ctx context.Context, note service.Note) (servic
 }
 
 // ── Mapping functions ────────────────────────────────────────────────────────
-// These convert between model.Note (database) and service.Note (domain).
+// These convert between dbschema.NoteRecord (database) and service.Note (domain).
 //
 // WHY NOT USE THE SAME STRUCT FOR BOTH?
 // Because they serve different purposes:
-//   - model.Note has GORM tags (primaryKey, not null, type:text) — database concerns
+//   - dbschema.NoteRecord has GORM tags (primaryKey, not null, type:text) — database concerns
 //   - service.Note has no tags — it's a pure domain object
 //
 // If we used one struct for both, changing a GORM tag could accidentally break
 // the service layer, or the service would depend on the GORM package (bad!).
 
-func toServiceNote(m model.Note) service.Note {
+func toServiceNote(m dbschema.NoteRecord) service.Note {
 	return service.Note{
 		ID:        m.ID,
 		Content:   m.Content,
@@ -170,8 +170,8 @@ func toServiceNote(m model.Note) service.Note {
 	}
 }
 
-func toModelNote(s service.Note) model.Note {
-	return model.Note{
+func toModelNote(s service.Note) dbschema.NoteRecord {
+	return dbschema.NoteRecord{
 		ID:        s.ID,
 		Content:   s.Content,
 		Title:     s.Title,

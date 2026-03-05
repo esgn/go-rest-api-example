@@ -114,7 +114,7 @@ func EnforceQueryRules(maxAfterLength, maxLimit int) func(http.Handler) http.Han
 }
 
 // RejectUnknownJSONFields ensures NewNote payloads only contain known fields
-// Uses validateNewNoteObject to check JSON shape without fully unmarshaling into a struct, 
+// Uses validateNewNoteObject to check JSON shape without fully unmarshaling into a struct,
 // so we can return a consistent error response for unknown fields vs malformed JSON.
 func RejectUnknownJSONFields() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

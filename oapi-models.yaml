@@ -1,7 +1,7 @@
 package: api
 generate:
   models: true # Go structs from schemas (models is the new name for types)
-output: src/internal/gen/models.gen.go # will overwrite this file if it already exists
+output: src/internal/http/openapi/models.gen.go # will overwrite this file if it already exists
 output-options:
   # do not remove unused imports (default: false)
   # skip-prune keeps all schemas/types from the OpenAPI document, even unused ones.

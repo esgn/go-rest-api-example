@@ -38,12 +38,12 @@ import (
 
 	"github.com/joho/godotenv"
 
-	handlers "notes-api/internal/api"
-	"notes-api/internal/api/middleware"
-	"notes-api/internal/db"
-	gen "notes-api/internal/gen"
-	"notes-api/internal/repository"
-	"notes-api/internal/service"
+	handlers "notes-api/internal/http"
+	"notes-api/internal/http/middleware"
+	gen "notes-api/internal/http/openapi"
+	"notes-api/internal/notes/repository"
+	"notes-api/internal/notes/service"
+	"notes-api/internal/platform/db"
 )
 
 var appLogLevel = new(slog.LevelVar)
@@ -94,7 +94,7 @@ func main() {
 
 	// Build the layered dependencies:
 	// repository -> service -> strict HTTP handlers.
-	noteRepo := repository.NewNotesRepository(database)
+	noteRepo := repository.NewSQLiteNotesRepository(database)
 	// passing noteRepo into that function forces the compiler to verify interface compatibility at startup
 	// so we get a compile-time error if the repo doesn't satisfy the service's expected interface.
 	noteService := service.NewNotesService(noteRepo, svcCfg)

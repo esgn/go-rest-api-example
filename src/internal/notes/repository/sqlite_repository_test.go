@@ -6,20 +6,29 @@ import (
 	"testing"
 	"time"
 
-	"notes-api/internal/db"
-	"notes-api/internal/model"
-	"notes-api/internal/service"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
+	_ "modernc.org/sqlite"
+	"notes-api/internal/notes/service"
+	dbschema "notes-api/internal/platform/db/schema"
 )
 
 // openTestDB creates a fresh in-memory SQLite database with migrated schema.
-func openTestDB(t *testing.T) *NotesRepository {
+func openTestDB(t *testing.T) *SQLiteNotesRepository {
 	t.Helper()
-	ctx := context.Background()
-	gormDB, err := db.OpenSQLite(ctx, ":memory:", db.DefaultConfig())
+	gormDB, err := gorm.Open(sqlite.Dialector{
+		DriverName: "sqlite",
+		DSN:        "file::memory:?cache=shared",
+	}, &gorm.Config{
+		NamingStrategy: schema.NamingStrategy{
+			SingularTable: false,
+		},
+	})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	if err := db.Migrate(ctx, gormDB); err != nil {
+	if err := gormDB.WithContext(context.Background()).AutoMigrate(&dbschema.NoteRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 	t.Cleanup(func() {
@@ -28,7 +37,7 @@ func openTestDB(t *testing.T) *NotesRepository {
 			sqlDB.Close()
 		}
 	})
-	return NewNotesRepository(gormDB)
+	return NewSQLiteNotesRepository(gormDB)
 }
 
 var fixedTime = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
@@ -140,7 +149,7 @@ func TestUpdate_NotFound_DoesNotInsert(t *testing.T) {
 
 // ── List – sort orders ───────────────────────────────────────────────────────
 
-func seedNotes(t *testing.T, repo *NotesRepository, n int) []service.Note {
+func seedNotes(t *testing.T, repo *SQLiteNotesRepository, n int) []service.Note {
 	t.Helper()
 	ctx := context.Background()
 	result := make([]service.Note, 0, n)
@@ -306,7 +315,7 @@ func TestList_EmptyDB(t *testing.T) {
 // ── Mapping functions ────────────────────────────────────────────────────────
 
 func TestToServiceNote_RoundTrip(t *testing.T) {
-	m := model.Note{
+	m := dbschema.NoteRecord{
 		ID:        1,
 		Content:   "hello",
 		Title:     "hello",

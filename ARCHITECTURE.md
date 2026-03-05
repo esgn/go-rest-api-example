@@ -13,15 +13,16 @@ This document describes the architecture of the `src` API implementation and the
 
 Current flow:
 
-`main -> generated router + path/query pre-bind -> middleware -> strict adapter (typed request/body decode) -> handlers -> service -> repository -> db`
+`main -> generated router + path/query pre-bind -> middleware -> strict handler (typed request/body decode) -> handlers -> service -> repository -> db`
 
 Dependency direction:
 
 - `cmd/api/main.go` depends on all lower layers to wire concrete instances.
-- `internal/api` depends on `internal/service` and generated types.
-- `internal/service` depends only on Go stdlib and `NotesStore` interface.
-- `internal/repository` depends on `gorm` and maps db models to domain models.
-- `internal/db` encapsulates DB startup/migration.
+- `internal/http` depends on `internal/notes/service` and generated OpenAPI types.
+- `internal/notes/service` depends only on Go stdlib and `NotesStore` interface.
+- `internal/notes/repository` depends on `gorm`, maps persistence records to domain models, and implements the `NotesStore` port.
+- `internal/platform/db` encapsulates DB startup/connection settings and runs migrations.
+- `internal/platform/db/schema` owns the GORM persistence models used by both repository and migration.
 
 Design rule:
 
@@ -33,13 +34,13 @@ Design rule:
 Two directions exist and they are different:
 
 - Runtime call flow: `handler -> service -> repository -> db`
-- Compile-time imports: `api imports service`, `repository imports service`, `service imports no repository/db package`
+- Compile-time imports: `http imports notes/service`, `notes/repository imports notes/service + platform/db/schema`, `platform/db imports platform/db/schema`, `notes/service imports no repository/db package`
 
 Why `repository` imports `service`:
 
 - `service` owns the port interface (`NotesStore`) and domain-facing types.
 - `repository` is an infrastructure adapter that implements that port.
-- Go interfaces are structural, so `NotesRepository` satisfies `service.NotesStore`
+- Go interfaces are structural, so `SQLiteNotesRepository` satisfies `service.NotesStore`
   by method set; no explicit `implements` keyword is required.
 - `main` composes concrete wiring (`noteRepo -> NewNotesService(noteRepo, ...)`).
 
@@ -48,6 +49,7 @@ Why this matters:
 - Business logic remains independent from GORM/SQLite.
 - Service tests can run with mocks/fakes without touching a real database.
 - Storage can be swapped (SQLite/Postgres/in-memory) without changing service logic.
+- Persistence schema (`NoteRecord`) is shared in `platform/db/schema`, avoiding cross-layer import inversion.
 
 What would violate the rule:
 
@@ -64,11 +66,11 @@ flowchart LR
         main[cmd/api/main.go]
         prebind[Generated Router + Path/Query Pre-Bind]
         mw[Middleware Chain]
-        strict[Strict Adapter<br/>Typed Request + JSON Body Decode]
-        handlers[Handlers<br/>internal/api]
-        service[Service<br/>internal/service]
-        repo[Repository<br/>internal/repository]
-        db[DB Layer<br/>internal/db + SQLite]
+        strict[Strict Handler<br/>Typed Request + JSON Body Decode]
+        handlers[Handlers<br/>internal/http]
+        service[Service<br/>internal/notes/service]
+        repo[Repository<br/>internal/notes/repository]
+        db[DB Layer<br/>internal/platform/db + SQLite]
     end
 
     client --> main --> prebind --> mw --> strict --> handlers --> service --> repo --> db
@@ -78,15 +80,15 @@ flowchart LR
 
 For `GET /notes`, `POST /notes`, `GET /notes/{id}`, `PUT /notes/{id}`:
 
-1. HTTP request enters generated router (`internal/gen/server.gen.go`).
+1. HTTP request enters generated router (`internal/http/openapi/server.gen.go`).
 2. Generated pre-middleware binding parses path/query params (only on operations that have them).
 3. Standard middleware chain runs (reverse wrapping in generated code).
-4. Strict adapter builds typed request objects; for write ops it decodes JSON body.
+4. Strict handler builds typed request objects; for write ops it decodes JSON body.
 5. Handlers translate typed request objects to service calls.
 6. Service applies domain rules and orchestrates use cases.
 7. Repository performs persistence and maps errors/types.
 8. Handler maps domain errors to API response objects.
-9. Strict response wrapper writes typed response payload.
+9. Strict handler writes typed response payload.
 
 Important nuance:
 
@@ -130,7 +132,7 @@ Single owner per rule (target state and current behavior):
 |---|---|
 | Method/path routing | generated router |
 | Primitive param binding (`id`, `limit` int parsing) | generated pre-middleware binder |
-| Request JSON decode and required body | strict generated decoder |
+| Request JSON decode and required body | strict handler decoder |
 | Unknown query keys | `RejectUnknownQueryParams` middleware |
 | Query constraints (`after` empty/max length, `limit` range) | `EnforceQueryRules` middleware |
 | Body size cap | `EnforceBodyAndContentType` middleware |
@@ -159,7 +161,7 @@ Ownership:
 
 - Middleware rejects transport-level issues with `400/413/415`.
 - Generated pre-middleware path/query bind errors go through router `ErrorHandlerFunc`.
-- Strict request/response adapter errors go through strict request/response handlers.
+- Strict handler request/response errors go through strict error handlers.
 - Handler maps domain sentinel errors to expected HTTP statuses.
 - Unhandled errors become `500 internal server error`.
 
@@ -190,8 +192,8 @@ Environment variables (from process env and optional `.env` in `src`):
 
 Generated files:
 
-- `src/internal/gen/server.gen.go`
-- `src/internal/gen/models.gen.go`
+- `src/internal/http/openapi/server.gen.go`
+- `src/internal/http/openapi/models.gen.go`
 
 Rule:
 
@@ -200,11 +202,11 @@ Rule:
 
 ## Testing Strategy
 
-- Service: pure unit tests with mock store.
+- Service: pure unit tests with in-package mock store.
 - Repository: DB behavior tests.
-- API handler: integration-ish HTTP tests through strict wrapper + middleware.
+- API handler: integration-ish HTTP tests through strict handler + middleware, with local test mock.
 - Middleware: table-driven HTTP tests for validation behavior.
-- Logging: focused unit tests for level parsing/filtering and request log fields.
+- Logging: focused unit tests for LOG_LEVEL parsing/configuration and request log fields/level mapping.
 
 ## When Adding New Endpoints
 

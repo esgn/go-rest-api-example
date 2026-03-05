@@ -8,16 +8,16 @@ package db
 import (
 	"context"
 
-	"gorm.io/driver/sqlite" // GORM's SQLite driver adapter
-	"gorm.io/gorm"          // GORM is an ORM (Object-Relational Mapper) for Go
-	"gorm.io/gorm/schema"   // Schema configuration (table naming rules, etc.)
+	"gorm.io/driver/sqlite"       // GORM's SQLite driver adapter
+	"gorm.io/gorm"                // GORM is an ORM (Object-Relational Mapper) for Go
+	gschema "gorm.io/gorm/schema" // Schema configuration (table naming rules, etc.)
 
 	// The underscore "_" import means we import this package only for its side
 	// effects (it registers itself as a database/sql driver named "sqlite").
 	// This is a pure-Go SQLite implementation — no C compiler (CGO) needed.
 	_ "modernc.org/sqlite"
 
-	"notes-api/internal/model" // Our GORM model structs (used for migrations)
+	dbschema "notes-api/internal/platform/db/schema"
 )
 
 // Config holds database connection pool settings.
@@ -60,7 +60,7 @@ func OpenSQLite(ctx context.Context, path string, cfg Config) (*gorm.DB, error) 
 		// NamingStrategy controls how GORM names tables from struct names.
 		// SingularTable: false means struct "Note" → table "notes" (pluralized).
 		// If true, it would be "note" (singular).
-		NamingStrategy: schema.NamingStrategy{
+		NamingStrategy: gschema.NamingStrategy{
 			SingularTable: false,
 		},
 	})
@@ -95,7 +95,7 @@ func OpenSQLite(ctx context.Context, path string, cfg Config) (*gorm.DB, error) 
 // Migrate runs GORM's AutoMigrate, which automatically creates or updates
 // database tables to match our Go structs.
 //
-// For example, if model.Note has fields ID and Content, AutoMigrate will:
+// For example, if dbschema.NoteRecord has fields ID and Content, AutoMigrate will:
 //   - Create the "notes" table if it doesn't exist
 //   - Add any new columns if we add fields to the struct later
 //   - It will NOT delete columns or data (it's safe to run on every startup)
@@ -103,5 +103,5 @@ func OpenSQLite(ctx context.Context, path string, cfg Config) (*gorm.DB, error) 
 // WithContext(ctx) ensures the migration can be cancelled if the app is
 // shutting down.
 func Migrate(ctx context.Context, database *gorm.DB) error {
-	return database.WithContext(ctx).AutoMigrate(&model.Note{})
+	return database.WithContext(ctx).AutoMigrate(&dbschema.NoteRecord{})
 }

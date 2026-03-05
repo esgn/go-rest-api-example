@@ -10,15 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"notes-api/internal/api/middleware"
-	gen "notes-api/internal/gen"
-	"notes-api/internal/service"
-	"notes-api/internal/testutil"
+	"notes-api/internal/http/middleware"
+	gen "notes-api/internal/http/openapi"
+	"notes-api/internal/notes/service"
 )
 
 var fixedTime = time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
-func newTestHTTPHandler(mock *testutil.MockNotesStore, maxBodyBytes int64) http.Handler {
+func newTestHTTPHandler(mock *MockNotesStore, maxBodyBytes int64) http.Handler {
 	cfg := service.Config{
 		MaxContentLength: 100,
 		MaxTitleLength:   20,
@@ -50,7 +49,7 @@ func newTestHTTPHandler(mock *testutil.MockNotesStore, maxBodyBytes int64) http.
 	})
 }
 
-func newDefaultTestHTTPHandler(mock *testutil.MockNotesStore) http.Handler {
+func newDefaultTestHTTPHandler(mock *MockNotesStore) http.Handler {
 	return newTestHTTPHandler(mock, 1024)
 }
 
@@ -117,7 +116,7 @@ func TestToAPINote(t *testing.T) {
 }
 
 func TestCreateNoteHandler_Valid(t *testing.T) {
-	mock := &testutil.MockNotesStore{
+	mock := &MockNotesStore{
 		CreateFn: func(_ context.Context, n service.Note) (service.Note, error) {
 			n.ID = 1
 			return n, nil
@@ -141,7 +140,7 @@ func TestCreateNoteHandler_Valid(t *testing.T) {
 }
 
 func TestCreateNoteHandler_BadInputs(t *testing.T) {
-	h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+	h := newDefaultTestHTTPHandler(&MockNotesStore{})
 
 	tests := []struct {
 		name        string
@@ -169,7 +168,7 @@ func TestCreateNoteHandler_BadInputs(t *testing.T) {
 }
 
 func TestCreateNoteHandler_OversizedBody(t *testing.T) {
-	h := newTestHTTPHandler(&testutil.MockNotesStore{}, 32)
+	h := newTestHTTPHandler(&MockNotesStore{}, 32)
 	body := `{"content":"` + strings.Repeat("a", 1000) + `"}`
 
 	rr := doRequest(t, h, http.MethodPost, "/notes", "application/json", body)
@@ -180,7 +179,7 @@ func TestCreateNoteHandler_OversizedBody(t *testing.T) {
 
 func TestGetNoteHandler(t *testing.T) {
 	t.Run("found", func(t *testing.T) {
-		mock := &testutil.MockNotesStore{
+		mock := &MockNotesStore{
 			GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
 				return service.Note{
 					ID:        id,
@@ -207,7 +206,7 @@ func TestGetNoteHandler(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		mock := &testutil.MockNotesStore{
+		mock := &MockNotesStore{
 			GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
 				return service.Note{}, service.ErrNoteNotFound
 			},
@@ -221,7 +220,7 @@ func TestGetNoteHandler(t *testing.T) {
 	})
 
 	t.Run("unknown query", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes/1?foo=bar", "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -231,7 +230,7 @@ func TestGetNoteHandler(t *testing.T) {
 
 func TestUpdateNoteHandler(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		mock := &testutil.MockNotesStore{
+		mock := &MockNotesStore{
 			GetByIDFn: func(_ context.Context, id int) (service.Note, error) {
 				return service.Note{ID: id, Content: "old", CreatedAt: fixedTime, UpdatedAt: fixedTime}, nil
 			},
@@ -254,7 +253,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		mock := &testutil.MockNotesStore{
+		mock := &MockNotesStore{
 			GetByIDFn: func(_ context.Context, _ int) (service.Note, error) {
 				return service.Note{}, service.ErrNoteNotFound
 			},
@@ -268,7 +267,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 	})
 
 	t.Run("invalid body", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodPut, "/notes/1", "application/json", `not json`)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -276,7 +275,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 	})
 
 	t.Run("oversized body", func(t *testing.T) {
-		h := newTestHTTPHandler(&testutil.MockNotesStore{}, 32)
+		h := newTestHTTPHandler(&MockNotesStore{}, 32)
 		body := `{"content":"` + strings.Repeat("x", 1000) + `"}`
 		rr := doRequest(t, h, http.MethodPut, "/notes/1", "application/json", body)
 		if rr.Code != http.StatusRequestEntityTooLarge {
@@ -285,7 +284,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 	})
 
 	t.Run("unknown query", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodPut, "/notes/1?foo=bar", "application/json", `{"content":"updated"}`)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -293,7 +292,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 	})
 
 	t.Run("unsupported media type", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodPut, "/notes/1", "text/plain", `{"content":"updated"}`)
 		if rr.Code != http.StatusUnsupportedMediaType {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusUnsupportedMediaType)
@@ -303,7 +302,7 @@ func TestUpdateNoteHandler(t *testing.T) {
 
 func TestListNotesHandler(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
-		mock := &testutil.MockNotesStore{
+		mock := &MockNotesStore{
 			ListFn: func(_ context.Context, _ service.ListParams) ([]service.Note, error) {
 				return []service.Note{{ID: 1, Content: "one", Title: "one", WordCount: 1, CreatedAt: fixedTime, UpdatedAt: fixedTime}}, nil
 			},
@@ -326,7 +325,7 @@ func TestListNotesHandler(t *testing.T) {
 	})
 
 	t.Run("unknown query", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes?foo=bar", "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -334,7 +333,7 @@ func TestListNotesHandler(t *testing.T) {
 	})
 
 	t.Run("explicit zero limit", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes?limit=0", "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -342,7 +341,7 @@ func TestListNotesHandler(t *testing.T) {
 	})
 
 	t.Run("explicit empty after", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes?after=", "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -350,7 +349,7 @@ func TestListNotesHandler(t *testing.T) {
 	})
 
 	t.Run("too long after", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes?after="+strings.Repeat("a", 513), "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -358,7 +357,7 @@ func TestListNotesHandler(t *testing.T) {
 	})
 
 	t.Run("limit above max", func(t *testing.T) {
-		h := newDefaultTestHTTPHandler(&testutil.MockNotesStore{})
+		h := newDefaultTestHTTPHandler(&MockNotesStore{})
 		rr := doRequest(t, h, http.MethodGet, "/notes?limit=101", "", "")
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)

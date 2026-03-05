@@ -2,7 +2,7 @@ package: api
 generate:
   std-http-server: true # net/http server interface
   strict-server: true # adds validation layer
-output: src/internal/gen/server.gen.go # will overwrite this file if it already exists
+output: src/internal/http/openapi/server.gen.go # will overwrite this file if it already exists
 output-options:
   # do not remove unused imports (default: false)
   # skip-prune keeps all schemas/types from the OpenAPI document, even unused ones.

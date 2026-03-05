@@ -30,7 +30,7 @@
 //
 // Package layout:
 //   - types.go        — domain types, errors, config, store interface
-//   - notes_service.go — service struct and all use-case methods
+//   - service.go      — service struct and all use-case methods
 //
 // ──────────────────────────────────────────────────────────────────────────────
 package service

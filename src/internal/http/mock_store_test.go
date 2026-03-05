@@ -1,14 +1,12 @@
-// Package testutil provides shared test helpers used across packages.
-package testutil
+package api
 
 import (
 	"context"
-	"notes-api/internal/service"
+
+	"notes-api/internal/notes/service"
 )
 
-// MockNotesStore is a hand-written mock implementing service.NotesStore.
-// Each method delegates to a function field; set only the fields your test
-// needs — any nil field panics with a clear message if called unexpectedly.
+// MockNotesStore is a hand-written mock implementing service.NotesStore for HTTP tests.
 type MockNotesStore struct {
 	ListFn    func(ctx context.Context, params service.ListParams) ([]service.Note, error)
 	GetByIDFn func(ctx context.Context, id int) (service.Note, error)
@@ -16,7 +14,6 @@ type MockNotesStore struct {
 	UpdateFn  func(ctx context.Context, note service.Note) (service.Note, error)
 }
 
-// Compile-time check: MockNotesStore satisfies service.NotesStore.
 var _ service.NotesStore = (*MockNotesStore)(nil)
 
 func (m *MockNotesStore) List(ctx context.Context, params service.ListParams) ([]service.Note, error) {
